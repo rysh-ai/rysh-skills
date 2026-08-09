@@ -13,7 +13,7 @@ Spawns panes next to this one, starts a real interactive claude in each, feeds i
 prompt, and reports back. The children stay on screen: the user can watch them work,
 type into them, or take one over at any point. Nothing here uses headless `-p`.
 
-**Helper:** `.claude/skills/rysh-fanout/scripts/ryshfan.py` — stdlib only, no install.
+**Helper:** `scripts/ryshfan.py`, next to this file — stdlib only, no install.
 Run it with `python3`. Every subcommand prints JSON except `screen`.
 
 ---
@@ -24,11 +24,20 @@ Usually nobody has to say. A pane exports `$RYSH_SESSION`, so `discover` resolve
 session this conversation is *running in* — a fact about where we are, not a guess about
 what was meant. It reports which rule fired as `resolved_by`.
 
+Resolve the helper once, from wherever this skill is installed — a project's
+`.claude/skills`, `~/.claude/skills`, `$CODEX_HOME/skills`, or a plugin. Set
+`RYSH_SKILLS_DIR` to override. Every later block assumes `$R` is set:
+
 ```sh
-R=.claude/skills/rysh-fanout/scripts/ryshfan.py
-python3 $R discover                       # RYSH_SESSION, or the only daemon running
-python3 $R --session <name> discover      # override, and required if neither applies
-python3 $R panes                          # every pane, fully qualified
+for d in "${RYSH_SKILLS_DIR:-}" "${CLAUDE_PLUGIN_ROOT:-}/skills" .claude/skills "$HOME/.claude/skills" "${CODEX_HOME:-$HOME/.codex}/skills"; do
+  if [ -f "$d/rysh-fanout/scripts/ryshfan.py" ]; then R="$d/rysh-fanout/scripts/ryshfan.py"; break; fi
+done
+```
+
+```sh
+python3 "$R" discover                       # RYSH_SESSION, or the only daemon running
+python3 "$R" --session <name> discover      # override, and required if neither applies
+python3 "$R" panes                          # every pane, fully qualified
 ```
 
 When there is no `$RYSH_SESSION` (a daemon older than **2026-08-05**, or ryshfan run
@@ -51,20 +60,20 @@ a pane and the focus follows it, so the next `spawn` anchors somewhere new. Pass
 ## The normal flow
 
 ```sh
-R=.claude/skills/rysh-fanout/scripts/ryshfan.py
+# $R resolved as above
 S=""   # empty when discover resolves the session itself; else "--session <name>"
 
 # 1. one pane per parallel task, stacked next to this one
-python3 $R $S spawn --count 3
+python3 "$R" $S spawn --count 3
 
 # 2. start each child on its own prompt (prompt goes in at launch)
-python3 $R $S start <child-id> --prompt-file /tmp/task-a.md
+python3 "$R" $S start <child-id> --prompt-file /tmp/task-a.md
 
 # 3. block until it stops working — this returns the child's answer
-python3 $R $S wait <child-id> --timeout 900
+python3 "$R" $S wait <child-id> --timeout 900
 
 # 4. clean up
-python3 $R $S close <child-id>
+python3 "$R" $S close <child-id>
 ```
 
 Spawn all the children first, start them all, and only then `wait` on each in turn —
@@ -81,8 +90,8 @@ its transcript is a known file and the last thing it said can be read back as te
 `wait` and `result` both do that, and `result` re-reads it at any time afterwards.
 
 ```sh
-python3 $R $S result <child-id>                 # whole answer + transcript path
-python3 $R $S result <child-id> --max-chars 500 # clipped, flagged `truncated`
+python3 "$R" $S result <child-id>                 # whole answer + transcript path
+python3 "$R" $S result <child-id> --max-chars 500 # clipped, flagged `truncated`
 ```
 
 `wait` clips its answer at 4000 chars by default (`--max-chars`, 0 = unlimited) so one
@@ -101,7 +110,7 @@ stuck one, not for parsing.
 ### Follow-up turns
 
 ```sh
-python3 $R $S send <child-id> 'now also check the tests and update the file'
+python3 "$R" $S send <child-id> 'now also check the tests and update the file'
 ```
 
 `send` types into the running claude and confirms it was submitted, pressing Enter

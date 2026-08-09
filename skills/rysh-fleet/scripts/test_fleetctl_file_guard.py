@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regression test: `--file` must name a real, readable file.
 
-Run: python3 .claude/skills/rysh-fleet/scripts/test_fleetctl_file_guard.py
+Run (from the rysh-fleet skill directory): python3 scripts/test_fleetctl_file_guard.py
 
 fleetctl NEVER reads the --file body; deliver() records the path and tells the
 recipient "Read <path> in full". So a path whose content was never persisted --

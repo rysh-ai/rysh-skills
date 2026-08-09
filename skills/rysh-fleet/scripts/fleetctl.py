@@ -37,14 +37,28 @@ import uuid
 
 # --------------------------------------------------------------------------
 # ryshfan is the substrate. Find it next door in the rysh-fanout skill.
+#
+# Nothing here may assume where the skill was installed. The sibling lookup
+# off __file__ covers the normal case (both skills in one skills directory,
+# wherever that is); the rest cover a split install — fanout in ~/.claude or
+# $CODEX_HOME, fleet in the project — and RYSHFAN_DIR is the escape hatch for
+# a layout none of them predicted.
 # --------------------------------------------------------------------------
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+_HOME = os.path.expanduser("~")
+_SKILL_ROOTS = [
+    os.environ.get("RYSH_SKILLS_DIR", ""),
+    os.path.join(os.environ["CLAUDE_PLUGIN_ROOT"], "skills") if os.environ.get("CLAUDE_PLUGIN_ROOT") else "",
+    os.path.join(".claude", "skills"),
+    os.path.join(_HOME, ".claude", "skills"),
+    os.path.join(os.environ.get("CODEX_HOME") or os.path.join(_HOME, ".codex"), "skills"),
+]
 _CANDIDATES = [
     os.environ.get("RYSHFAN_DIR", ""),
     os.path.join(_HERE, "..", "..", "rysh-fanout", "scripts"),
     os.path.join(_HERE, "..", "..", "..", "skills", "rysh-fanout", "scripts"),
-]
+] + [os.path.join(r, "rysh-fanout", "scripts") for r in _SKILL_ROOTS if r]
 for _c in _CANDIDATES:
     if _c and os.path.isfile(os.path.join(_c, "ryshfan.py")):
         sys.path.insert(0, os.path.abspath(_c))
@@ -53,8 +67,11 @@ try:
     import ryshfan as R  # noqa: E402
 except ImportError:  # pragma: no cover
     sys.stderr.write(
-        "fleetctl: cannot import ryshfan. It ships with the rysh-fanout skill; "
-        "point RYSHFAN_DIR at the directory holding ryshfan.py.\n")
+        "fleetctl: cannot import ryshfan. It ships with the rysh-fanout skill, "
+        "normally installed beside this one. Searched:\n  " +
+        "\n  ".join(os.path.abspath(c) for c in _CANDIDATES if c) +
+        "\nPoint RYSHFAN_DIR at the directory holding ryshfan.py, or "
+        "RYSH_SKILLS_DIR at the skills directory holding both.\n")
     raise SystemExit(2)
 
 

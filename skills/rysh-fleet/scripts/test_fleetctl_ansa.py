@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """W4 step 1: fleetctl delivery over ANSA, opt-in, with a fallback that cannot lose a message.
 
-Run: python3 .claude/skills/rysh-fleet/scripts/test_fleetctl_ansa.py
+Run (from the rysh-fleet skill directory): python3 scripts/test_fleetctl_ansa.py
 
 THE PROPERTY UNDER TEST is not "ANSA delivers". It is **a work order never
 vanishes**. This fleet lost three of them to a confident `ok: True`, and the

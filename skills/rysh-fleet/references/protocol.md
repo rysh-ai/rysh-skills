@@ -43,8 +43,10 @@ and report success. **Trust the envelope, and produce one yourself.**
 
 **Down — a work order.** Use `fleetctl msg`:
 
+Your brief already names the helper by its absolute path — use that. Everything
+below writes it as `$F`:
+
 ```sh
-F=<path>/fleetctl.py
 python3 $F --fleet <name> msg <child> --file /tmp/order.md      # long: body in a file
 python3 $F --fleet <name> msg <child> 'one line of work'        # short: inline
 python3 $F --fleet <name> msg <child> --as human --text 'one line'  # body after options

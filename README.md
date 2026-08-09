@@ -32,8 +32,9 @@ can watch it, type into it, or take it over at any point. Nothing runs headless.
 | [`rysh-fanout`](skills/rysh-fanout) | Fan work out to sibling panes: spawn N panes, start an agent in each with its own prompt, wait for them, read their answers, send follow-up turns, close them. Panes are named after their task, so `##pane list` reads like a task board. |
 | [`rysh-fleet`](skills/rysh-fleet) | A persistent org chart on top of `rysh-fanout`: CEO → managers → workers, paired by unit, one worktree each. Adds cross-tab addressing, a from-me message envelope, chain-of-command routing (`msg` down, `report` up), and the agents-board mirror. Units come from a directory of docs, one doc split by heading, or the shape of the codebase. |
 
-`rysh-fleet` builds on `rysh-fanout` as a library and finds it as a sibling directory —
-install them together.
+`rysh-fleet` builds on `rysh-fanout` as a library. It finds it as a sibling directory
+first, then falls back to the standard skill locations, so a split install still works —
+but installing the pair together is the simple path.
 
 ---
 
@@ -44,7 +45,7 @@ Each skill is a directory with a `SKILL.md` and its helper scripts. The helpers 
 
 ### Claude Code
 
-Per project (recommended — this is the layout the skills' own examples assume):
+Per project:
 
 ```sh
 git clone https://github.com/rysh-ai/rysh-skills.git
@@ -67,14 +68,28 @@ Then `/rysh`, `/rysh-fanout`, `/rysh-fleet` — or just describe what you want
 Codex reads the same `SKILL.md` format:
 
 ```sh
-mkdir -p ~/.codex/skills
-cp -R rysh-skills/skills/* ~/.codex/skills/
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
+cp -R rysh-skills/skills/* "${CODEX_HOME:-$HOME/.codex}/skills/"
 ```
 
-The helper paths quoted inside each `SKILL.md` are written relative to a project's
-`.claude/skills/`. From any other install location, run the helper by its real path —
-`python3 ~/.codex/skills/rysh-fanout/scripts/ryshfan.py …` — or set
-`RYSHFAN_DIR` so `fleetctl` can find its substrate.
+### Anywhere else
+
+Install location is not baked in anywhere. Each `SKILL.md` opens by resolving its own
+helper, probing — in order — `$RYSH_SKILLS_DIR`, `$CLAUDE_PLUGIN_ROOT/skills`,
+`.claude/skills`, `~/.claude/skills`, and `$CODEX_HOME/skills` (default `~/.codex`):
+
+```sh
+for d in "${RYSH_SKILLS_DIR:-}" "${CLAUDE_PLUGIN_ROOT:-}/skills" .claude/skills "$HOME/.claude/skills" "${CODEX_HOME:-$HOME/.codex}/skills"; do
+  if [ -f "$d/rysh/scripts/ryshctl.py" ]; then C="$d/rysh/scripts/ryshctl.py"; break; fi
+done
+```
+
+For a layout none of those predict, put the skills wherever you like and export
+`RYSH_SKILLS_DIR=/path/to/skills`. The helper scripts locate themselves and each other
+from `__file__`, so `rysh-fleet` finds `rysh-fanout` as a sibling no matter where the
+pair lives; `RYSHFAN_DIR` overrides that one lookup on its own. Fleet briefs are
+rendered with absolute paths, so every agent in a fleet gets a working invocation
+regardless of its own working directory.
 
 ---
 
@@ -97,20 +112,26 @@ them and can drive rysh equally — but spawning a Codex child is not wired up y
 ## Try it
 
 ```sh
+# resolve the helpers wherever you installed them
+S=$(for d in "${RYSH_SKILLS_DIR:-}" "${CLAUDE_PLUGIN_ROOT:-}/skills" .claude/skills \
+             "$HOME/.claude/skills" "${CODEX_HOME:-$HOME/.codex}/skills"; do
+      if [ -d "$d/rysh-fanout" ]; then printf %s "$d"; break; fi
+    done)
+
 # what session am I in, what's open, what has it cost?
-python3 .claude/skills/rysh/scripts/ryshctl.py dashboard
+python3 "$S/rysh/scripts/ryshctl.py" dashboard
 
 # three panes, three agents, three prompts, in parallel
-R=.claude/skills/rysh-fanout/scripts/ryshfan.py
-python3 $R spawn --count 3
-python3 $R start <child-id> --prompt-file /tmp/task-a.md
-python3 $R wait  <child-id> --timeout 900
+R="$S/rysh-fanout/scripts/ryshfan.py"
+python3 "$R" spawn --count 3
+python3 "$R" start <child-id> --prompt-file /tmp/task-a.md
+python3 "$R" wait  <child-id> --timeout 900
 
 # a whole fleet from a roadmap directory
-F=.claude/skills/rysh-fleet/scripts/fleetctl.py
-python3 $F units --from roadmap/            # see the units first — always
-python3 $F --fleet epics up --from roadmap/ --workers 1 --worktrees
-python3 $F --fleet epics tree
+F="$S/rysh-fleet/scripts/fleetctl.py"
+python3 "$F" units --from roadmap/            # see the units first — always
+python3 "$F" --fleet epics up --from roadmap/ --workers 1 --worktrees
+python3 "$F" --fleet epics tree
 ```
 
 Every helper prints JSON (except `tree` and `screen`), so the agent parses instead of

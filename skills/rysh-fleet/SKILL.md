@@ -27,9 +27,18 @@ type into it, or take it over. Nothing here is headless `-p`.
 no answer for: cross-tab pane addressing, a persistent org chart, and a message
 envelope so every agent knows who is talking to it.
 
+Resolve the helper once, from wherever this skill is installed — a project's
+`.claude/skills`, `~/.claude/skills`, `$CODEX_HOME/skills`, or a plugin. Set
+`RYSH_SKILLS_DIR` to override. Every later block assumes `$F` is set:
+
 ```sh
-F=.claude/skills/rysh-fleet/scripts/fleetctl.py
-python3 $F --fleet <name> <subcommand>
+for d in "${RYSH_SKILLS_DIR:-}" "${CLAUDE_PLUGIN_ROOT:-}/skills" .claude/skills "$HOME/.claude/skills" "${CODEX_HOME:-$HOME/.codex}/skills"; do
+  if [ -f "$d/rysh-fleet/scripts/fleetctl.py" ]; then F="$d/rysh-fleet/scripts/fleetctl.py"; break; fi
+done
+```
+
+```sh
+python3 "$F" --fleet <name> <subcommand>
 ```
 
 Everything prints JSON except `tree` and `screen`.
@@ -40,17 +49,17 @@ Everything prints JSON except `tree` and `screen`.
 
 ```sh
 # 0. see what would become units — always do this first
-python3 $F units --from new_roadmap/tracks/fleet            # a directory of docs
-python3 $F units --from ROADMAP.md --split-on '^## '        # one doc, split by heading
-python3 $F units --from . --scan-source                     # from the codebase itself
+python3 "$F" units --from new_roadmap/tracks/fleet            # a directory of docs
+python3 "$F" units --from ROADMAP.md --split-on '^## '        # one doc, split by heading
+python3 "$F" units --from . --scan-source                     # from the codebase itself
 
 # 1. build it (add --dry-run to count panes without opening any)
-python3 $F --fleet epics up --from new_roadmap/tracks/fleet \
+python3 "$F" --fleet epics up --from new_roadmap/tracks/fleet \
     --workers 1 --worktrees --mission 'ship the launch'
 
 # 2. verify — start returns 0 even when a launch failed
-python3 $F --fleet epics verify
-python3 $F --fleet epics tree
+python3 "$F" --fleet epics verify
+python3 "$F" --fleet epics tree
 ```
 
 `up` opens three lanes in the current tab (CEO, managers, workers), names every
@@ -74,14 +83,14 @@ Key flags: `--workers N` (per manager) · `--worktrees` + `--base-branch` ·
 ## Driving it
 
 ```sh
-python3 $F --fleet epics msg mgr-04 --file /tmp/order.md      # down the chain
-python3 $F --fleet epics broadcast manager --file /tmp/all.md # one order to every manager
-python3 $F --fleet epics report 'BLOCKED: no credentials'     # up the chain, from a pane
-python3 $F --fleet epics collect mgr-01 mgr-02 --timeout 1800 # wait on several, get answers
-python3 $F --fleet epics status wkr-04 | screen wkr-04 | result wkr-04
-python3 $F --fleet epics subfleet --count 3 --worktrees       # a manager grows its own team
-python3 $F --fleet epics commit -m 'docs(fleet): …'           # commit YOUR roadmap only
-python3 $F --fleet epics down [--keep-ceo] [--keep-worktrees]
+python3 "$F" --fleet epics msg mgr-04 --file /tmp/order.md      # down the chain
+python3 "$F" --fleet epics broadcast manager --file /tmp/all.md # one order to every manager
+python3 "$F" --fleet epics report 'BLOCKED: no credentials'     # up the chain, from a pane
+python3 "$F" --fleet epics collect mgr-01 mgr-02 --timeout 1800 # wait on several, get answers
+python3 "$F" --fleet epics status wkr-04 | screen wkr-04 | result wkr-04
+python3 "$F" --fleet epics subfleet --count 3 --worktrees       # a manager grows its own team
+python3 "$F" --fleet epics commit -m 'docs(fleet): …'           # commit YOUR roadmap only
+python3 "$F" --fleet epics down [--keep-ceo] [--keep-worktrees]
 ```
 
 Addressing accepts a label (`mgr-04-sell-revenue`), a role+unit (`mgr-04`,

@@ -14,19 +14,28 @@ session the user is sitting in: their panes, their spend, their secrets. Read
 before you write, and treat anything that changes what is on their screen as
 something to say out loud.
 
-**Helper:** `.claude/skills/rysh/scripts/ryshctl.py` — stdlib only.
+**Helper:** `scripts/ryshctl.py`, next to this file — stdlib only.
 
 ---
 
 ## The one invocation
 
+Resolve the helper once, from wherever this skill is installed — a project's
+`.claude/skills`, `~/.claude/skills`, `$CODEX_HOME/skills`, or a plugin. Set
+`RYSH_SKILLS_DIR` to override. Every later block assumes `$C` is set:
+
 ```sh
-C=.claude/skills/rysh/scripts/ryshctl.py
-python3 $C '##session'                # any ## command
-python3 $C --json '##pane list'       # {"ok","status","command","output"} for parsing
-python3 $C --pane <id> '##mode list'  # answer AS another pane
-python3 $C where                      # session, workspace, binary, our own tab/lane/stack/pane
-python3 $C dashboard                  # session + layout + what is running + spend, in one call
+for d in "${RYSH_SKILLS_DIR:-}" "${CLAUDE_PLUGIN_ROOT:-}/skills" .claude/skills "$HOME/.claude/skills" "${CODEX_HOME:-$HOME/.codex}/skills"; do
+  if [ -f "$d/rysh/scripts/ryshctl.py" ]; then C="$d/rysh/scripts/ryshctl.py"; break; fi
+done
+```
+
+```sh
+python3 "$C" '##session'                # any ## command
+python3 "$C" --json '##pane list'       # {"ok","status","command","output"} for parsing
+python3 "$C" --pane <id> '##mode list'  # answer AS another pane
+python3 "$C" where                      # session, workspace, binary, our own tab/lane/stack/pane
+python3 "$C" dashboard                  # session + layout + what is running + spend, in one call
 ```
 
 Pane-scoped commands — `##pane info`, `##mode list`, `##grounding`, `##hop status`
@@ -54,13 +63,13 @@ Exit status is trustworthy — every `##` command reports failure properly, so
 ## Look before you touch
 
 ```sh
-python3 $C '##session'        # name, state, daemon pid, nats/web ports, working dir
-python3 $C '##tab list'       # tabs
-python3 $C '##pane list'      # panes of the active tab, with ids
-python3 $C '##lane list'      # lanes, with ids and pane counts
-python3 $C '##pane info'      # our own pane: name, mode, provider, status
-python3 $C '##llm status'     # the model actually in effect
-python3 $C '##cost'           # spend so far
+python3 "$C" '##session'        # name, state, daemon pid, nats/web ports, working dir
+python3 "$C" '##tab list'       # tabs
+python3 "$C" '##pane list'      # panes of the active tab, with ids
+python3 "$C" '##lane list'      # lanes, with ids and pane counts
+python3 "$C" '##pane info'      # our own pane: name, mode, provider, status
+python3 "$C" '##llm status'     # the model actually in effect
+python3 "$C" '##cost'           # spend so far
 ```
 
 `##help` prints the complete list of commands — reach for it rather than
@@ -84,7 +93,7 @@ reports lane and stack as **positions**, which stop being true the moment a lane
 or stack is opened or closed:
 
 ```sh
-python3 $C "##cmd pane --tab $RYSH_TAB --lane $RYSH_LANE --pg $RYSH_STACK --pane <id> pwd"
+python3 "$C" "##cmd pane --tab $RYSH_TAB --lane $RYSH_LANE --pg $RYSH_STACK --pane <id> pwd"
 ```
 
 Every selector resolves an id before an index or a name, so `$RYSH_*` values
@@ -162,14 +171,14 @@ in there. `##worktree remove` preserves a dirty tree but drops a clean one.
 **Where am I, and what is running?**
 
 ```sh
-python3 $C where && python3 $C '##session' && python3 $C '##pane list'
+python3 "$C" where && python3 "$C" '##session' && python3 "$C" '##pane list'
 ```
 
 **What model is this pane actually on, and why?**
 
 ```sh
-python3 $C '##llm status'   # the effective model
-python3 $C '##llm scopes'   # session > workspace > tab > lane > stack > pane — narrowest wins
+python3 "$C" '##llm status'   # the effective model
+python3 "$C" '##llm scopes'   # session > workspace > tab > lane > stack > pane — narrowest wins
 ```
 
 **Spend.** `##cost` for this session, `##cost week` for 7 days, `##cost budget 500k`

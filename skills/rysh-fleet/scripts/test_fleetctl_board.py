@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for the agents-board mirror in fleetctl.deliver().
 
-Run:  python3 .claude/skills/rysh-fleet/scripts/test_fleetctl_board.py
+Run (from the rysh-fleet skill directory):  python3 scripts/test_fleetctl_board.py
 
 Why this file exists at all. `board_mirror` runs inside the code path that every
 `msg`, `report` and `broadcast` in every live fleet on this machine goes through.
