@@ -65,8 +65,11 @@ see who is talking without opening anything.
    did, the worktree path and branch, the commands you ran and their **real
    output**, what is left, what is blocking. Never summarise a test run as "tests
    pass" — paste the failure.
-2. **`fleetctl report`** pushes an unsolicited update into your parent's pane, for
-   when your parent has stopped waiting on you:
+2. **`fleetctl report`** pushes an unsolicited update to your parent, for when
+   your parent has stopped waiting on you. In a **queue** fleet (the default) or a
+   **grid** fleet it travels as a prompt on the fleet board and arrives in your
+   parent's session beside its keyboard; in an input-stream fleet it is typed into
+   your parent's pane. Your brief says which yours is.
 
 ```sh
 python3 $F --fleet <name> report 'BLOCKED: <one line>'
@@ -77,11 +80,52 @@ Use channel 1 by default. Channel 2 is for a blocker, a finding your parent must
 act on now, or a long-running job reaching a milestone — not for chatter. Every
 push interrupts a working agent.
 
+## Your status — the fleet ledger (design 054)
+
+The daemon's **fleet actor** keeps a status ledger of every member and watches
+every pane. You **declare** your work; it **observes** your pane; it derives
+your **health** from both and acts on it — a check-in to you when you are
+stalled, silent or unblocked, an escalation to your parent when you are
+available, unresponsive or deadlocked.
+
+```sh
+$BIN fleet status progress --as <pane> --fleet <name> --task '<what you are doing>'
+$BIN fleet status blocked  --as <pane> --fleet <name> --blocked-by <member|human|ext:<what>>
+$BIN fleet status done     --as <pane> --fleet <name> --note '<absolute path / branch>'
+$BIN fleet status idle     --as <pane> --fleet <name>
+```
+
+Declare on every change: a new task, the moment you wait on anyone, finishing,
+running out of work. Answer every `CHECK-IN` from `fleet-actor` with exactly one
+of these commands. Never declare `blocker_for` — the actor derives it. The full
+contract is the **rysh-fleet-agent** skill (`../../rysh-fleet-agent/SKILL.md`);
+your brief spells the commands out with your own ids.
+
 ## Structured results go in files
 
 Prose is for your parent to read; a **file** is for the next step to consume. A
 diff, a JSON result, a list of paths, a generated document: write it, then cite
 the path in your report. Do not paste a 400-line artifact into a pane.
+
+### Cite paths ABSOLUTELY — a relative path names N different files (`F-33`)
+
+Every agent works in **its own worktree**, so `out/note-1.md` is not one file:
+it is one file *per agent*, and the copy in the workspace — the one a human
+opens when they read your report — is usually empty.
+
+> *"[wkr-01] both notes on disk, in `out/`"* — true, and still misleading. The
+> notes were in `worktrees/<fleet>-wkr-01/out/`. The reader looked in the
+> workspace, found nothing, and had no way to tell which of you was wrong.
+> Observed twice, from two different fleets.
+
+So, in **every board post and every report**:
+
+- give the **absolute path**: `/Users/you/repo/worktrees/<fleet>-<label>/out/note-1.md`;
+- or name the path **and the worktree it is in**, together.
+
+A path with neither is a report the reader can act on and be wrong about, which
+is the failure this whole protocol exists to prevent. It costs you one variable —
+your worktree is in your brief, and `$F --fleet <name> tree` prints it.
 
 ## Worktrees
 

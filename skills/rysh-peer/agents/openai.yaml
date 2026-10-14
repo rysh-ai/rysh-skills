@@ -1,0 +1,3 @@
+interface:
+  display_name: "Rysh Peer Board"
+  short_description: "Coordinate agents across rysh sessions"

@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 
@@ -95,6 +97,63 @@ def _find_daemon_ps(session: str) -> dict | None:
     return None
 
 
+def _candidate_bins() -> list[str]:
+    bins: list[str] = []
+    for name in [
+        os.environ.get("RYSH_BIN", ""),
+        "rysh_local",
+        "rysh",
+        "ry",
+        os.path.expanduser("~/.local/bin/rysh_local"),
+        "/opt/homebrew/bin/rysh",
+        "/opt/homebrew/bin/ry",
+    ]:
+        if not name:
+            continue
+        path = shutil.which(name) if "/" not in name else name
+        if path and path not in bins and os.path.exists(path):
+            bins.append(path)
+    return bins
+
+
+def _candidate_workspaces() -> list[str]:
+    dirs: list[str] = []
+    for path in [
+        os.environ.get("RYSH_WORKSPACE", ""),
+        os.getcwd(),
+    ]:
+        if path and path not in dirs and os.path.isdir(path):
+            dirs.append(path)
+    return dirs
+
+
+def _direct_exec_env(session: str) -> dict | None:
+    """Fallback for sandboxed Codex shells where ps/lsof may be unavailable.
+
+    Some hosts can see a live daemon through `rysh exec` while `list-sessions`
+    from the config workspace reports a stale stopped row. Prove the candidate
+    by asking the daemon itself rather than trusting the registry.
+    """
+    for bin_path in _candidate_bins():
+        for workspace in _candidate_workspaces():
+            proc = subprocess.run(
+                [bin_path, "exec", "--session", session, "--", "##session"],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if proc.returncode == 0:
+                return {
+                    "pid": None,
+                    "session": session,
+                    "workspace": workspace,
+                    "bin": bin_path,
+                    "discovered_by": "direct-exec",
+                }
+    return None
+
+
 def find_daemon(session: str) -> dict:
     """Locate the daemon for `session` and read its identity from the OS.
 
@@ -107,6 +166,9 @@ def find_daemon(session: str) -> dict:
              else _find_daemon_ps(session))
     if found:
         return found
+    direct = _direct_exec_env(session)
+    if direct:
+        return direct
     die(f"no running daemon for session {session!r} — `rysh list-sessions` in its workspace")
 
 
@@ -144,6 +206,50 @@ def dashboard(env: dict, session: str) -> None:
             if line.strip().startswith("---") or line.strip().startswith("==="):
                 continue
             print(line)
+
+
+def run_entity(env: dict, argv: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [env["bin"], *argv],
+        cwd=env["workspace"],
+        capture_output=True,
+        text=True,
+    )
+
+
+def pane_in_lane(env: dict, session: str, lane_index: str) -> None:
+    tab = os.environ.get("RYSH_TAB", "").strip()
+    if not tab:
+        die("no RYSH_TAB in this environment; cannot know which tab to modify")
+    if not lane_index.isdigit() or int(lane_index) < 1:
+        die("pane-in-lane needs a 1-based lane number, e.g. pane-in-lane 3")
+
+    listed = run_entity(env, ["lane", session, tab, "list"])
+    if listed.returncode != 0:
+        sys.stderr.write((listed.stdout or "") + (listed.stderr or ""))
+        sys.exit(listed.returncode)
+
+    lane_id = ""
+    wanted = int(lane_index)
+    for line in listed.stdout.splitlines():
+        m = re.search(r"\[(\d+)\]\s+id=([0-9a-f-]{36}|[0-9a-f]{8})", line)
+        if m and int(m.group(1)) == wanted:
+            lane_id = m.group(2)
+            break
+    if not lane_id:
+        print(listed.stdout, end="")
+        die(f"lane {wanted} not found in current tab {tab}")
+
+    created = run_entity(env, ["pane", session, tab, lane_id, "create"])
+    sys.stdout.write(created.stdout or "")
+    sys.stderr.write(created.stderr or "")
+    if created.returncode != 0:
+        sys.exit(created.returncode)
+
+    verified = run_entity(env, ["pane", session, tab, lane_id, "list"])
+    sys.stdout.write(verified.stdout or "")
+    sys.stderr.write(verified.stderr or "")
+    sys.exit(verified.returncode)
 
 
 def main() -> None:
@@ -186,6 +292,12 @@ def main() -> None:
         env["lane"] = os.environ.get("RYSH_LANE") or None
         env["stack"] = os.environ.get("RYSH_STACK") or None
         print(json.dumps(env, indent=2))
+        return
+
+    if args and args[0] == "pane-in-lane":
+        if len(args) < 2:
+            die("pane-in-lane needs a lane number")
+        pane_in_lane(env, session, args[1])
         return
 
     if not args:

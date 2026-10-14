@@ -36,6 +36,7 @@ python3 "$C" --json '##pane list'       # {"ok","status","command","output"} for
 python3 "$C" --pane <id> '##mode list'  # answer AS another pane
 python3 "$C" where                      # session, workspace, binary, our own tab/lane/stack/pane
 python3 "$C" dashboard                  # session + layout + what is running + spend, in one call
+python3 "$C" pane-in-lane 3              # create a pane in lane 3 of the current tab, then verify
 ```
 
 Pane-scoped commands — `##pane info`, `##mode list`, `##grounding`, `##hop status`
@@ -57,6 +58,12 @@ The raw form, if you need it: `cd <workspace> && rysh exec --session <name> --
 
 Exit status is trustworthy — every `##` command reports failure properly, so
 `set -e` and `if` work. Check it rather than grepping the text.
+
+**Codex sandbox fallback.** In Codex, `ps`/`lsof` may need approval and the session registry can
+look stale from the config workspace even while the daemon is live. `ryshctl.py` now tries direct
+`rysh_local exec --session $RYSH_SESSION -- '##session'` from likely workspaces before giving up.
+If the user names a config/workspace path, run from that workspace or set `RYSH_WORKSPACE=<path>`;
+set `RYSH_BIN=<path>` for a specific local binary.
 
 ---
 
@@ -102,14 +109,30 @@ drop straight in.
 **3. `##cmd` output does not come back** — unless you ask. It runs in the target
 *panes*; what returns is a dispatch summary (`ran "pwd" in 3 pane(s)`). `--capture`
 redirects each pane's output to a file and prints where, ending with
-`__rysh_capture_done:<status>`; poll for that line, then read the file. The waiting is
-yours to do: a `##` command runs on the mailbox every other pane queues behind, so
-blocking there would freeze the session.
+`__rysh_capture_done:<status>`. The waiting is yours to do: a `##` command runs on
+the mailbox every other pane queues behind, so blocking there would freeze the session.
+
+**3a. Read a capture with `##cmd capture`, never with another `##cmd`.**
+`##cmd capture` lists what has been captured and its state; `##cmd capture <pane>`
+prints one, saying `running` or `exit <n>`. Both are served from the daemon and touch
+no pane. **Do not poll by broadcasting `cat <capture file>`** — that types the `cat`
+into every pane in the scope, and a pane running claude answers it as a prompt instead
+of producing the sentinel, so the poll never succeeds and the retries pile up. That is a
+real incident, not a hypothetical: 64 stray prompts across three claude panes in two
+minutes, interleaved with what the operator was typing.
+
+```sh
+python3 "$C" '##cmd stack --capture make test'   # dispatch; prints one path per pane
+python3 "$C" '##cmd capture'                     # which captures exist, and their state
+python3 "$C" '##cmd capture 276a479b'            # print one (an id prefix is enough)
+```
 
 **3b. Target only the panes that can take a command.** `##cmd` types into whatever is
 in the pane — a shell command sent to a pane running claude becomes a message to claude.
 `--running shell` restricts a broadcast to panes at a prompt; `--running claude` does
-the opposite. `##pane list` shows what each pane is running.
+the opposite. `##pane list` shows what each pane is running. `--capture` now implies
+`--running shell` (a captured command is shell syntax, so it is meaningless anywhere
+else) and the summary says how many panes that dropped; pass `--running` to override.
 
 **4. Secrets: list names, never fetch values.** `##secret list` prints names and
 which tier they come from — safe. `##secret get <NAME>` prints the **real
@@ -149,8 +172,9 @@ in there. `##worktree remove` preserves a dirty tree but drops a clean one.
 | `##new` | layout | `##new tab`, `##new lane`, `##new pane`, `##new stack <N>`, `##new grid <L>x<P>` |
 | `##tab` `##lane` `##panegroup`/`##pg` `##pane` | inspect / rename / delete each level | `… list`, `… info`, `##pane name`, `##pane delete <id>` |
 | `##pane meta` | per-pane notes for whoever drives it | `##pane meta list`, `##pane meta set <k> <v>`, `##pane list --meta` |
+| `##pane sync` | whether web clients repaint a pane live (off = pane keeps running, browser holds its last screen) | `##pane sync off --pane <ref>`, `##pane sync off --all` (spares your pane + boards), `##pane sync on --all`, `##pane sync list` |
 | `##pane new --claude` | a pane running claude, session id recorded | `##pane new --claude review the diff` |
-| `##cmd` | run bash across a scope | `##cmd stack pwd`, `##cmd ws --running shell git status -s`, `##cmd stack --capture make test` |
+| `##cmd` | run bash across a scope | `##cmd stack pwd`, `##cmd ws --running shell git status -s`, `##cmd stack --capture make test`, `##cmd capture <pane>` |
 | `##mode` | a pane's input modes | `##mode list`, `##mode new prompt`, `##mode delete chat` |
 | `##llm` / `##<scope> model` | model selection and its hierarchy | `##llm status`, `##llm list`, `##llm scopes`, `##pane model <p>/<n>` |
 | `##secret` `##variable` `##snat` | named values, and what the provider may see | `##secret list`, `##var list`, `##snat status` |
@@ -187,6 +211,19 @@ to set a ceiling. Worth checking before a big fan-out, not after.
 **Open working panes.** `##new stack 3` adds three to the active group;
 `##new grid 2x3` builds a lane×pane grid; `##pane new --worktree <branch>` opens
 one in its own git worktree (branch `pane/<alias>`, removed on close if clean).
+
+**Create a pane in a specific lane of this tab.** Prefer the helper shortcut; it uses `$RYSH_TAB`,
+resolves the 1-based lane number to the full lane UUID, creates the pane, then lists that lane:
+
+```sh
+python3 "$C" pane-in-lane 3
+```
+
+Raw equivalent, after `##lane list` gives the full lane id:
+
+```sh
+rysh_local pane "$RYSH_SESSION" "$RYSH_TAB" "<lane-id>" create
+```
 
 **Rename for legibility.** `##pane name <id> <name>` and `##rysh tab name <name>`
 — names work as selectors afterwards, which beats copying uuids around.

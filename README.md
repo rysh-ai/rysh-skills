@@ -31,6 +31,8 @@ can watch it, type into it, or take it over at any point. Nothing runs headless.
 | [`rysh`](skills/rysh) | Operate the current session: tabs, lanes, stacks, panes, input modes, secrets and variables, LLM model bindings, spend, policy, the governance proxy, cron, worktrees, MCP servers, sharing, the web UI. Any `##` command, with the binary/session/cwd resolution that trips everyone up already handled. |
 | [`rysh-fanout`](skills/rysh-fanout) | Fan work out to sibling panes: spawn N panes, start an agent in each with its own prompt, wait for them, read their answers, send follow-up turns, close them. Panes are named after their task, so `##pane list` reads like a task board. |
 | [`rysh-fleet`](skills/rysh-fleet) | A persistent org chart on top of `rysh-fanout`: CEO → managers → workers, paired by unit, one worktree each. Adds cross-tab addressing, a from-me message envelope, chain-of-command routing (`msg` down, `report` up), and the agents-board mirror. Units come from a directory of docs, one doc split by heading, or the shape of the codebase. |
+| [`rysh-fleet-agent`](skills/rysh-fleet-agent) | The contract every agent *inside* a fleet follows: declare its work (`idle`/`progress`/`blocked`/`done`) with `--pct`/`--eta`, name who blocks it, answer check-ins and the goal executor's HURRY / WAIT / SHIELD / REALIGN / SEQUENCE directives, and ack prompts. Without it the fleet actor and goal executor have nothing to judge. |
+| [`rysh-peer`](skills/rysh-peer) | Coordinate across independent rysh sessions through a workspace peer board: register leaders and workers, delegate tasks, exchange questions, progress and results, and review — each developer keeps their own panes and agents. |
 
 `rysh-fleet` builds on `rysh-fanout` as a library. It finds it as a sibling directory
 first, then falls back to the standard skill locations, so a split install still works —
@@ -50,7 +52,8 @@ Per project:
 ```sh
 git clone https://github.com/rysh-ai/rysh-skills.git
 mkdir -p .claude/skills
-cp -R rysh-skills/skills/rysh rysh-skills/skills/rysh-fanout rysh-skills/skills/rysh-fleet .claude/skills/
+cp -R rysh-skills/skills/rysh rysh-skills/skills/rysh-fanout rysh-skills/skills/rysh-fleet \
+      rysh-skills/skills/rysh-fleet-agent rysh-skills/skills/rysh-peer .claude/skills/
 ```
 
 Or for every project, into your personal skills directory:
@@ -60,7 +63,7 @@ mkdir -p ~/.claude/skills
 cp -R rysh-skills/skills/* ~/.claude/skills/
 ```
 
-Then `/rysh`, `/rysh-fanout`, `/rysh-fleet` — or just describe what you want
+Then `/rysh`, `/rysh-fanout`, `/rysh-fleet`, `/rysh-peer` — or just describe what you want
 ("open four panes and give each one an epic") and the skill triggers on its own.
 
 ### Codex

@@ -102,6 +102,13 @@ class MirrorCannotBreakDelivery(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.env, self.man = make_env_and_manifest(self.tmp)
         STUB.calls.clear()
+        self._real_ansa_send = fleetctl.ansa_send
+        fleetctl._ansa_capable = True   # these tests are about the mirror, not deployment
+        # Delivery is neutralised here too: these tests break subprocess.run on
+        # purpose to break the MIRROR, and since W4-3b delivery uses the same
+        # call. Without this they would assert "the mirror cannot break
+        # delivery" while actually breaking delivery themselves.
+        fleetctl.ansa_send = lambda env, rcpt, line: {"ok": True, "via": "ansa"}
         os.environ["RYSH_FLEET_BOARD"] = "1"
 
     def _deliver(self):
@@ -113,8 +120,10 @@ class MirrorCannotBreakDelivery(unittest.TestCase):
         self.assertTrue(res["submitted"])
         self.assertEqual(res["to"], "wkr-01")
         self.assertIn("[FLEET testfleet", res["envelope"])
-        sends = [c for c in STUB.calls if c[0] == "op_send"]
-        self.assertEqual(len(sends), 1, "the recipient must still be typed into exactly once")
+        # "Typed into exactly once" was the old way of saying DELIVERED. Since
+        # W4-3b delivery is ANSA, so the assertion follows the intent rather
+        # than the mechanism it used to have.
+        self.assertEqual(res.get("via"), "ansa", "the message must still be delivered")
         self.assertEqual(len(self.man["log"]), 1, "the message must still be logged")
 
     def test_delivery_survives_mirror_raising(self):
@@ -164,22 +173,25 @@ class MirrorShape(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.env, self.man = make_env_and_manifest(self.tmp)
         STUB.calls.clear()
+        self._real_ansa_send = fleetctl.ansa_send
+        fleetctl._ansa_capable = True   # these tests are about the mirror, not deployment
         os.environ["RYSH_FLEET_BOARD"] = "1"
-        # Pin DELIVERY to the typing path so `self.ran` contains only the
-        # MIRROR's subprocess call. Since W4-3a flipped ANSA on by default,
-        # fleet_send also shells out, and a counter that cannot tell delivery
-        # from mirroring would silently start measuring the wrong thing.
-        # Delivery-path behaviour is tested in test_fleetctl_ansa.py; these
-        # tests are about the mirror.
-        os.environ["RYSH_FLEET_ANSA"] = "0"
+        # Neutralise DELIVERY so `self.ran` contains only the MIRROR's
+        # subprocess call. Since W4-3b there is no typing path to pin to and no
+        # flag to unset -- delivery always shells out to ANSA -- so a counter
+        # that cannot tell delivery from mirroring would silently measure the
+        # wrong thing. Delivery is tested in test_fleetctl_ansa.py; these tests
+        # are about the mirror.
+        fleetctl.ansa_send = lambda env, rcpt, line: {"ok": True, "via": "ansa"}
         self.ran = []
         fleetctl.subprocess.run = lambda argv, **k: self.ran.append((argv, k)) or types.SimpleNamespace(
             stdout="", stderr="", returncode=0)
 
     def tearDown(self):
+        fleetctl.ansa_send = self._real_ansa_send
+        fleetctl._ansa_capable = None
         fleetctl.subprocess.run = subprocess.run
         os.environ.pop("RYSH_FLEET_BOARD", None)
-        os.environ.pop("RYSH_FLEET_ANSA", None)
 
     def test_f21_uses_the_agent_door_not_the_human_one(self):
         """F-21, and the reason it is tested ENABLED.
@@ -227,7 +239,10 @@ class MirrorShape(unittest.TestCase):
         fleetctl.deliver(self.env, self.man, SENDER, RECIPIENT, "hello", "PROGRESS", None)
         joined = " ".join(self.ran[0][0])
         self.assertIn(SENDER["pane"], joined)
-        self.assertIn("pane pane-sen", " ".join(c[2] for c in STUB.calls if c[0] == "op_send"))
+        # The op_send half of this assertion is gone with the typing path
+        # (W4-3b). What it was really pinning survives: the MIRROR carries the
+        # full uuid, not the envelope's 8-char short form.
+        self.assertNotIn("pane-sen ", joined)
 
     def test_gate4_the_fleet_envelope_never_reaches_the_board(self):
         """Founder ruling, gate 4: a post carries persona + thread, NOT the

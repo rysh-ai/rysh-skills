@@ -292,6 +292,29 @@ def rysh_exec(env: dict, command: str, pane_id: str | None = None, timeout: int 
 PANE_LINE = re.compile(r"^(\s*>?\s*)\[(\d+)\]\s+(\S+)\s+id=(\S+)")
 RUNNING_RE = re.compile(r"running=(\S+)")
 META_RE = re.compile(r"meta:(\S+)")
+# A meta VALUE may contain spaces -- `agent.args` holds a whole launch line
+# (`--dangerously-skip-permissions --settings <file>`) -- and `##pane list
+# --meta` prints them raw: `meta:k1=v1 with space,k2=v2`. META_RE stops at the
+# first space, so everything after such a value was silently dropped; since
+# `agent.args` sorts first, that was EVERY other key (board.id, fleet.*,
+# claude.inbox ...). Found live in design 050 P4: `verify` reported a stamped
+# agent unreachable. parse_meta splits on `,key=` boundaries instead.
+META_TAIL_RE = re.compile(r"meta:(.*)$")
+META_KEY_RE = re.compile(r"(?:^|,)([A-Za-z0-9_.-]+)=")
+
+
+def parse_meta(line: str) -> dict:
+    """The meta map of one `##pane list --meta` pane line; {} when it has none."""
+    m = META_TAIL_RE.search(line)
+    if not m:
+        return {}
+    body = m.group(1).rstrip()
+    keys = list(META_KEY_RE.finditer(body))
+    out = {}
+    for i, k in enumerate(keys):
+        end = keys[i + 1].start() if i + 1 < len(keys) else len(body)
+        out[k.group(1)] = body[k.end():end]
+    return out
 LANE_LINE = re.compile(r"^\s*lane-(\d+)\s")
 GROUP_LINE = re.compile(r"^\s*group-(\d+)\s*$")
 TAB_LINE = re.compile(r'panes in tab "(.*)"\s+id=(\S+)')
@@ -305,6 +328,9 @@ def list_panes(env: dict, pane_id: str | None = None) -> list[dict]:
     """
     # --meta so a supervisor learns what every pane is in ONE call; without it
     # the same answer costs a round-trip per pane.
+    # ##pane list is tab-scoped: with no pane id it lists the tab the USER is
+    # focused on. Default to our own pane so spawn anchors in our tab, not theirs.
+    pane_id = pane_id or os.environ.get("RYSH_PANE", "").strip() or None
     out = rysh_exec(env, "##pane list --meta", pane_id=pane_id)
     tab_title = tab_id = ""
     lane = group = 0
@@ -324,12 +350,7 @@ def list_panes(env: dict, pane_id: str | None = None) -> list[dict]:
             continue
         m = PANE_LINE.match(line)
         if m:
-            meta = {}
-            if mm := META_RE.search(line):
-                for entry in mm.group(1).split(","):
-                    key, _, value = entry.partition("=")
-                    if key:
-                        meta[key] = value
+            meta = parse_meta(line)
             run = RUNNING_RE.search(line)
             panes.append(
                 {
