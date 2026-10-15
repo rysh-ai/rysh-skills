@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """The epic driver (design 028 §6.8, `E-43`).
 
-One fleet per epic doc, registered for free and promoted into a cap the DAEMON
-holds. The tests fake the registry, which is the point: the driver's job is to
-respect a refusal it did not compute, and faking the answer is the only way to
-exercise the refused path without standing up four fleets.
+One fleet per epic doc, registered for free and brought up `--promote N` at a
+time. Since founder ruling R11 (2026-10-07) there is no registry cap: the
+limit is the token ceiling, checked before each launch (test_fleetctl_r11_state).
+The tests fake the registry, the pane listing and the spend reading, so none of
+them talks to a live session.
 
 Run: python3 test_fleetctl_epics.py
 """
@@ -39,6 +40,19 @@ UNITS = [{"unit": f"{i:02d}", "title": f"Epic {i} — a thing", "sources": [f"ep
          for i in range(1, 6)]
 
 
+class Hermetic(unittest.TestCase):
+    """No live session: the spend reading and the pane listing are faked. Before
+    R11 these tests reached `R.session_cost` for real and passed only because a
+    nonexistent session `s` printed no ceiling."""
+
+    def setUp(self):
+        for name, value in (("session_cost", {"tokens": 0, "dollars": 0, "ceilings": []}),
+                            ("list_panes", [])):
+            p = mock.patch.object(F.R, name, return_value=value)
+            p.start()
+            self.addCleanup(p.stop)
+
+
 class TestFleetNames(unittest.TestCase):
     def test_a_fleet_name_is_always_a_legal_board_id(self):
         # A fleet's board id defaults to its name and a board id is a NATS
@@ -57,8 +71,9 @@ class TestFleetNames(unittest.TestCase):
         self.assertEqual(len(names), len(UNITS))
 
 
-class TestRegisterAllPromoteSome(unittest.TestCase):
+class TestRegisterAllPromoteSome(Hermetic):
     def setUp(self):
+        super().setUp()
         self.calls = []
 
     def fake_registry(self, results=None):
@@ -90,26 +105,10 @@ class TestRegisterAllPromoteSome(unittest.TestCase):
             F.op_epics(ENV, args(promote=0))
         up.assert_not_called()
 
-    def test_a_cap_refusal_is_reported_and_opens_nothing(self):
-        # THE CAP IS THE DAEMON'S. The driver asks for the slot BEFORE opening a
-        # pane, so a refused fleet costs nothing — a fleet that opened six panes
-        # and was then refused has already spent what the cap protects.
-        refuse = {("state", "epic-03-thing"): {"error": "3 fleets are already up"}}
-        reg = self.fake_registry(refuse)
-        with mock.patch.object(F, "discover_units", return_value=UNITS), \
-             mock.patch.object(F, "registry", side_effect=reg), \
-             mock.patch.object(F, "op_up", return_value={"panes": 6}) as up:
-            res = F.op_epics(ENV, args(promote=5))
-
-        names_up = {u["fleet"] for u in res["up"]}
-        self.assertNotIn("epic-03-thing", names_up)
-        self.assertTrue(any(r["fleet"] == "epic-03-thing" for r in res["refused_by_cap"]),
-                        f"the refusal was not reported: {res}")
-        self.assertEqual(up.call_count, 4, "a refused fleet must not open panes")
-
-    def test_a_failed_up_hands_the_slot_back(self):
-        # Otherwise the cap leaks a place nobody is using, and the next promote
-        # is refused for a fleet that does not exist.
+    def test_a_failed_up_is_reported_and_the_driver_writes_no_state(self):
+        # R11: there is no slot to hand back. The failed launch recorded its own
+        # truthful state (launch_roster writes `registered`); the driver must
+        # not write `up` — or anything — on its behalf.
         reg = self.fake_registry()
         with mock.patch.object(F, "discover_units", return_value=UNITS), \
              mock.patch.object(F, "registry", side_effect=reg), \
@@ -118,8 +117,8 @@ class TestRegisterAllPromoteSome(unittest.TestCase):
 
         self.assertEqual(res["up"], [])
         self.assertEqual(len(res["failed"]), 1)
-        released = [c for c in self.calls if c[0] == "state" and c[2] == "registered"]
-        self.assertTrue(released, "the slot was never handed back")
+        self.assertEqual([c for c in self.calls if c[0] == "state"], [],
+                         "the driver wrote a state on the launch's behalf")
 
     def test_a_failed_registration_is_not_promoted(self):
         reg = self.fake_registry({("register", "epic-01-thing"): {"error": "nope"}})
@@ -141,7 +140,7 @@ class TestRegisterAllPromoteSome(unittest.TestCase):
         self.assertEqual(res["epics"], 5)
 
 
-class TestPromoteTheNext(unittest.TestCase):
+class TestPromoteTheNext(Hermetic):
     LISTING = {"fleets": [
         {"name": "a", "state": "up"}, {"name": "b", "state": "up"},
         {"name": "c", "state": "up"}, {"name": "d", "state": "registered",
@@ -155,17 +154,20 @@ class TestPromoteTheNext(unittest.TestCase):
             res = F.op_epics_promote(ENV, args())
         self.assertEqual(res["promoted"], "d")
 
-    def test_a_full_cap_is_reported_not_forced(self):
+    def test_three_fleets_up_do_not_stop_the_next(self):
+        # R11: three fleets already up is no longer a reason to refuse. The
+        # driver does not ask the registry for a slot at all.
+        asked = []
+
         def reg(env, *argv):
-            if argv[0] == "ls":
-                return self.LISTING
-            return {"error": "3 fleets are already up (a, b, c) and the cap is 3"}
+            asked.append(argv)
+            return self.LISTING if argv[0] == "ls" else {}
         with mock.patch.object(F, "registry", side_effect=reg), \
-             mock.patch.object(F, "op_up") as up:
+             mock.patch.object(F, "op_up", return_value={"panes": 6, "ok": True}) as up:
             res = F.op_epics_promote(ENV, args())
-        self.assertIsNone(res["promoted"])
-        self.assertIn("cap is 3", res["reason"])
-        up.assert_not_called()
+        self.assertEqual(res["promoted"], "d")
+        up.assert_called_once()
+        self.assertEqual([a for a in asked if a[0] == "state"], [])
 
     def test_nothing_waiting_is_not_an_error(self):
         listing = {"fleets": [{"name": "a", "state": "up"}]}
@@ -235,7 +237,7 @@ class TestTheDriverPicksEpicsNotFurniture(unittest.TestCase):
                              f"{name} would become a fleet of its own")
 
 
-class TestOneEpicIsOneUnit(unittest.TestCase):
+class TestOneEpicIsOneUnit(Hermetic):
     """Found LIVE on 2026-08-11 — the worst find of the proof run.
 
     `epics-promote` built a child `up` for one epic and let it re-discover its

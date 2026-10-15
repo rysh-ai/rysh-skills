@@ -354,11 +354,139 @@ def registry_sync(env: dict, man: dict, state: str) -> dict:
             errors.append(f"{p['label']}: {r['error']}")
             continue
         members += 1
+    state_error = None
     if state:
         r = registry(env, "state", man["fleet"], state)
         if r.get("error"):
             errors.append(r["error"])
-    return {"registered": True, "members": members, "errors": errors}
+            state_error = r["error"]
+    return {"registered": True, "members": members, "errors": errors,
+            "state_error": state_error}
+
+
+# --------------------------------------------------------------------------
+# Truthful fleet state (founder ruling R11, 2026-10-07)
+#
+# D-14's three-fleet cap is retired. The registry records state; it does not
+# ration it. `up` is written only after a launch that succeeded, a failed launch
+# never says `up`, `down` writes `down`, and the limit on spend is the token
+# ceiling `budget_blocked` checks BEFORE anything launches.
+#
+# A DAEMON STILL ON A PRE-R11 BINARY refuses `up` past three fleets. That
+# refusal is a fact about the RECORD, not the fleet: the agents are running, so
+# it is reported and the panes are left alone. Taking working agents down to
+# make a row agree with an obsolete cap would be the worse lie.
+# --------------------------------------------------------------------------
+
+def launch_outcome(env: dict, man: dict, planned: int) -> dict:
+    """Did the launch succeed? Judged on three concrete signals, none of them an
+    exit code: every planned member got a pane, every member's pane still exists
+    in a fresh pane listing, and no member's worktree failed (an agent with no
+    worktree edits the shared main checkout).
+
+    Deliberately NOT the agent's screen: a claude typed into a shell is still
+    booting for seconds after this returns, and `verify` is the screen check.
+    """
+    problems = []
+    members = roster(man)
+    if len(members) < planned:
+        problems.append(f"{len(members)} of {planned} planned members got a pane")
+    live = {p["id"] for p in R.list_panes(env)}
+    for p in members:
+        if p["pane"] not in live:
+            problems.append(f"{p['label']}: pane {short(p['pane'])} is gone after launch")
+        if p.get("worktree_error"):
+            problems.append(f"{p['label']}: worktree failed: {p['worktree_error']}")
+    return {"ok": not problems, "problems": problems}
+
+
+def record_launch_state(env: dict, man: dict, outcome: dict) -> dict:
+    """Write what the launch earned: `up` on success, `registered` otherwise."""
+    wanted = "up" if outcome.get("ok") else "registered"
+    reg = registry_sync(env, man, wanted)
+    st = {"wanted": wanted, "recorded": not reg.get("state_error"), "registry": reg}
+    if reg.get("state_error"):
+        st["reason"] = reg["state_error"]
+        st["note"] = ("the registry refused the state; the panes were left running. A "
+                      "daemon still on a pre-R11 binary refuses `up` past three fleets "
+                      "until it is restarted — then `fleetctl reconcile --apply` fixes "
+                      "the rows from the live panes.")
+    return st
+
+
+def launch_roster(env: dict, man: dict, args, agent: str, launch_args: str) -> list:
+    """Start every member's agent. A launch that dies part-way (start_agent
+    `die`s) records `registered` before it re-raises: a fleet whose launch
+    failed must never be left reading `up`, nor be missing from the registry."""
+    launched, trusted = [], []
+    try:
+        for p in roster(man):
+            prompt = build_brief(env, man, p, args)
+            res = start_agent(env, R.find_pane(R.list_panes(env), p["pane"]),
+                              prompt, p.get("worktree"), launch_args, agent, man["fleet"],
+                              comm=fleet_comm(man))
+            p["session_id"] = res["session_id"]
+            stamp_launch(env, p["pane"], res, agent, res.get("launch_args", launch_args),
+                         task=p["label"])
+            if res.get("trusted", {}).get("added"):
+                trusted.append(res["trusted"]["path"])
+            launched.append({"label": p["label"], "role": p["role"],
+                             "pane": p["pane"], "session_id": res["session_id"]})
+    except SystemExit:
+        save_manifest(env, man)
+        registry_sync(env, man, "registered")
+        raise
+    if trusted:
+        man["codex_trusted"] = trusted
+    save_manifest(env, man)
+    return launched
+
+
+def fleet_liveness(fleet: dict, panes: list[dict]) -> dict:
+    """How much of a registry row is actually running: member panes that exist,
+    and of those, panes with a foreground program (an agent, not a bare shell)."""
+    by_id = {p["id"]: p for p in panes}
+    ids = [m.get("pane_id") for m in (fleet.get("members") or []) if m.get("pane_id")]
+    present = [by_id[i] for i in ids if i in by_id]
+    running = [p for p in present if (p.get("program") or "").strip()]
+    return {"members": len(ids), "panes_live": len(present), "agents_running": len(running)}
+
+
+def op_reconcile(env: dict, apply: bool = False) -> dict:
+    """One-shot: set each fleet's registry state from whether its panes are live.
+
+    Any live member pane -> `up`. No live pane and recorded `up` -> `down`. A
+    fleet never brought up stays `registered`. DRY RUN unless `apply`; with
+    `apply`, only the rows that change are written, and a refusal (a pre-R11
+    daemon) is reported per fleet rather than retried.
+    """
+    listing = registry(env, "ls")
+    if listing.get("error"):
+        die(f"cannot read the fleet registry: {listing['error']}")
+    panes = R.list_panes(env)
+    rows = []
+    for f in listing.get("fleets") or []:
+        live = fleet_liveness(f, panes)
+        now = f.get("state") or "registered"
+        if live["panes_live"]:
+            to = "up"
+        elif now == "up":
+            to = "down"
+        else:
+            to = now
+        row = {"fleet": f["name"], "from": now, "to": to if to != now else None, **live}
+        if apply and row["to"]:
+            r = registry(env, "state", f["name"], row["to"])
+            if r.get("error"):
+                row["error"] = r["error"]
+        rows.append(row)
+    changes = [r for r in rows if r["to"]]
+    return {"dry_run": not apply, "fleets": rows,
+            "summary": {"fleets": len(rows), "changes": len(changes),
+                        "to_up": sum(1 for r in changes if r["to"] == "up"),
+                        "to_down": sum(1 for r in changes if r["to"] == "down"),
+                        "refused": sum(1 for r in rows if r.get("error"))},
+            "apply_with": "fleetctl reconcile --apply"}
 
 
 def die(msg: str) -> None:
@@ -673,6 +801,12 @@ def rename(env: dict, pane_id: str, name: str) -> None:
 def set_meta(env: dict, pane_id: str, key: str, value: str) -> None:
     """`##pane meta` takes `--pane` and rejects a qualified --tab/--lane selector."""
     R.rysh_exec(env, f"##pane meta set {key} {value} --pane {pane_id}")
+
+
+def clear_meta(env: dict, pane_id: str, key: str) -> None:
+    """Delete one pane meta key. A key that is not there is reported by the
+    daemon and changes nothing, which is what a clear wants."""
+    R.rysh_exec(env, f"##pane meta delete {key} --pane {pane_id}")
 
 
 # --------------------------------------------------------------------------
@@ -1276,9 +1410,16 @@ def start_agent(env: dict, pane: dict, prompt: str, cwd: str | None,
     if is_board_comm(comm) and "--settings" not in agent_args:
         agent_args = f"{agent_args} --settings {shlex.quote(claude_comm_settings(env, pane))}".strip()
     args = agent_args if m else f"--session-id {session_id} {agent_args}"
-    out = R.cmd_to_pane(env, pane, f'{cd}{R.CLEAN_ENV} claude {args} "$(cat {path})"')
+    # ALWAYS START IN A KNOWN DIRECTORY (R12). claude files a session under the
+    # directory it started in, and the restart sweep resumes with
+    # `cd <agent.cwd> && claude --resume <id>` — so the directory has to be a
+    # fact, not "wherever the pane's shell happened to be". The member's
+    # worktree when it has one, the workspace otherwise.
+    launch_dir = cwd or env.get("workspace")
+    cd_line = f"cd {shlex.quote(launch_dir)} && " if launch_dir else ""
+    out = R.cmd_to_pane(env, pane, f'{cd_line}{R.CLEAN_ENV} claude {args} "$(cat {path})"')
     return {"session_id": session_id, "prompt_file": path, "agent": agent,
-            "launch_args": agent_args, "output": out.strip()}
+            "cwd": launch_dir, "launch_args": agent_args, "output": out.strip()}
 
 
 def agent_args_for(args) -> tuple[str, str]:
@@ -1347,6 +1488,97 @@ def stamp_launch(env: dict, pane_id: str, res: dict, agent: str,
     if agent_args.strip():
         R.set_meta(env, {"id": pane_id}, META_AGENT_ARGS, agent_args.strip())
         R.set_meta(env, {"id": pane_id}, "claude.args", agent_args.strip())
+    arm_restart_sweep(env, pane_id, agent, res.get("cwd"))
+
+
+# The keys rysh-cli's startup sweep reads (nativeResumePlan, design 029 §7),
+# spelled and meant exactly as stampNativeAgentMeta writes them.
+META_AGENT_NATIVE = "agent.native"   # presence arms the sweep; value "1"
+META_AGENT_KIND = "agent.kind"       # "claude" (codex is not armed — see below)
+META_AGENT_CWD = "agent.cwd"         # the directory the agent STARTED in
+
+
+def arm_restart_sweep(env: dict, pane_id: str, agent: str, cwd: str | None) -> None:
+    """Make a daemon restart resume this agent from its pinned session (R12).
+
+    Only claude is armed, and only with a known start directory. A fleet codex
+    has no session id the sweep can resume — fleetctl types it, and only
+    `##codex` discovers one — so arming it would start a FRESH, briefless codex
+    on every restart; and a rysh agent is not a process. Nothing is cleared for
+    them: every fleet pane is created fresh by `up`/`subfleet`, so none carries
+    an earlier stamp. The arming key goes LAST: a pane whose stamp is
+    half-written must never be armed, or the sweep would resume it with no
+    kind or no cwd.
+    """
+    if agent != "claude" or not cwd:
+        return
+    R.set_meta(env, {"id": pane_id}, META_AGENT_KIND, "claude")
+    R.set_meta(env, {"id": pane_id}, META_AGENT_CWD, cwd)
+    R.set_meta(env, {"id": pane_id}, META_AGENT_NATIVE, "1")
+
+
+def transcript_cwd(path: str) -> str | None:
+    """The directory a claude session started in, from its own transcript —
+    the authoritative answer for a pane launched before fleetctl recorded it."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i > 200:
+                    break
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("cwd"):
+                    return rec["cwd"]
+    except OSError:
+        return None
+    return None
+
+
+def op_stamp_resume(env: dict, apply: bool = False) -> dict:
+    """One-shot backfill (R12): arm the restart sweep on fleet panes launched
+    before fleetctl stamped them. DRY RUN unless `apply`.
+
+    Arms only a fleet pane whose CLAUDE IS RUNNING NOW (an exited or killed
+    agent must stay stopped), which is not stamped yet, and whose session
+    transcript says where it started. Writes kind and cwd, then the arming key.
+    """
+    rows = []
+    for p in R.list_panes(env):
+        meta = p.get("meta") or {}
+        if not meta.get(META_FLEET):
+            continue
+        agent = meta.get(META_AGENT) or "claude"
+        row = {"pane": p["id"], "label": meta.get(META_LABEL) or p.get("name"),
+               "fleet": meta[META_FLEET], "agent": agent}
+        if agent != "claude":
+            row.update(action="skip", reason=f"{agent}: no pinned session the sweep can resume")
+        elif meta.get(META_AGENT_NATIVE):
+            row.update(action="already-stamped")
+        elif not (p.get("program") or "").strip():
+            row.update(action="skip", reason="agent not running (exited or stopped); "
+                                            "arming it would resurrect a stopped agent")
+        else:
+            sid = meta.get("claude.session_id") or p["id"]
+            path = R.transcript_path(sid)
+            cwd = transcript_cwd(path) if path else None
+            if not path:
+                row.update(action="skip", reason=f"no transcript for session {sid}")
+            elif not cwd:
+                row.update(action="skip", reason=f"transcript {path} records no cwd")
+            else:
+                row.update(action="stamp", session_id=sid, cwd=cwd)
+                if apply:
+                    set_meta(env, p["id"], META_AGENT_KIND, "claude")
+                    set_meta(env, p["id"], META_AGENT_CWD, cwd)
+                    set_meta(env, p["id"], META_AGENT_NATIVE, "1")
+        rows.append(row)
+    counts: dict = {}
+    for r in rows:
+        counts[r["action"]] = counts.get(r["action"], 0) + 1
+    return {"dry_run": not apply, "panes": rows, "summary": counts,
+            "apply_with": "fleetctl stamp-resume --apply"}
 
 
 # --------------------------------------------------------------------------
@@ -2381,45 +2613,33 @@ def op_up(env: dict, args, units: list[dict] | None = None) -> dict:
     # a pane that is not yet a member. The sync after launch still runs — it
     # adds the session ids — and an upsert keeps whatever status landed.
     early_reg = registry_sync(env, man, "")
-    launched = []
     agent, launch_args = agent_args_for(args)
     man["agent"] = agent
     man["agent_args"] = launch_args
-    trusted = []
-    for p in roster(man):
-        prompt = build_brief(env, man, p, args)
-        res = start_agent(env, R.find_pane(R.list_panes(env), p["pane"]),
-                          prompt, p.get("worktree"), launch_args, agent, fleet,
-                          comm=fleet_comm(man))
-        p["session_id"] = res["session_id"]
-        stamp_launch(env, p["pane"], res, agent, res.get("launch_args", launch_args),
-                     task=p["label"])
-        if res.get("trusted", {}).get("added"):
-            trusted.append(res["trusted"]["path"])
-        launched.append({"label": p["label"], "role": p["role"],
-                         "pane": p["pane"], "session_id": res["session_id"]})
-    if trusted:
-        man["codex_trusted"] = trusted
-    save_manifest(env, man)
+    launched = launch_roster(env, man, args, agent, launch_args)
 
-    # queue messaging: every agent gets its own listener on the board.
+    # queue messaging (dev, design 051): every agent gets its own listener on the board.
     listeners = []
     if fleet_comm(man) == COMM_QUEUE:
         for p in roster(man):
             listeners.append(start_listener(env, man, p["pane"]))
 
-    # The daemon's registry is the authority; the manifest above is the cache.
-    # Reported rather than assumed: a fleet the registry does not know about is
-    # a fleet `##fleet list` cannot show and a scoped interrupt cannot confirm.
-    reg = registry_sync(env, man, "up")
+    # TRUTHFUL STATE (R11). The daemon's registry is the authority and the
+    # manifest the cache, but the registry is only as true as what is written to
+    # it: `up` only for a launch that succeeded, `registered` for one that did
+    # not, and a refusal of the write (a pre-R11 daemon's cap) reported rather
+    # than acted on. Membership was registered BEFORE launch (design 054) above.
+    outcome = launch_outcome(env, man, total)
+    state = record_launch_state(env, man, outcome)
     if early_reg.get("errors"):
-        reg["errors_before_launch"] = early_reg["errors"]
-    reg["watch"] = apply_watch(env, fleet, args)
-    reg["goal"] = apply_goal(env, fleet, args)
+        state["errors_before_launch"] = early_reg["errors"]
+    state["watch"] = apply_watch(env, fleet, args)
+    state["goal"] = apply_goal(env, fleet, args)
 
     return {"fleet": fleet, "units": len(units), "panes": total,
             "roadmap_dir": roadmap_dir, "manifest": manifest_path(env, fleet),
-            "registry": reg,
+            "ok": outcome["ok"], "launch": outcome, "state": state,
+            "registry": state["registry"],
             "launched": launched, "comm": fleet_comm(man), "listeners": listeners,
             "next": f"fleetctl verify --fleet {fleet}   # judge launches by screen, not exit code"}
 
@@ -2544,14 +2764,13 @@ def build_brief(env: dict, man: dict, p: dict, args) -> str:
 # 125 live claude sessions. The pane limit refuses first, the token ceiling
 # second, and the load failures on this stack are already on record — the ##cmd
 # pane dies under load and `start` returns 0 for launches that never happened.
-# So the driver REGISTERS everything (free: a row and a board id) and promotes
-# into the cap.
+# So the driver REGISTERS everything (free: a row and a board id) and brings up
+# `--promote N` of them per run.
 #
-# THE CAP IS NOT ENFORCED HERE. The registry refuses the fourth `up` (D-14,
-# ruled at 3), and this driver simply respects the refusal. Duplicating the
-# number would give the session two caps that can disagree, and the one that
-# matters is the one the daemon holds — a driver's copy is bypassed by anybody
-# running `fleetctl up` by hand.
+# THERE IS NO CAP (founder ruling R11, 2026-10-07, retired D-14's three). The
+# limit on spend is the session token ceiling, checked before every launch;
+# `--promote` is this driver's own staging flag, not a registry limit, and the
+# registry records the state each launch actually earned.
 # --------------------------------------------------------------------------
 
 
@@ -2567,12 +2786,26 @@ def epic_fleet_name(unit: dict) -> str:
     return re.sub(r"-+", "-", cleaned)[:32].strip("-")
 
 
-def op_epics(env: dict, args) -> dict:
-    """Register one fleet per epic, then promote up to the cap.
+def epics_budget_blocked(env: dict, args) -> str | None:
+    """The token-ceiling check `up` makes, asked BEFORE each launch so a driver
+    stops cleanly instead of `up` dying part-way through a run. `--force`
+    bypasses it exactly as it does for `up`."""
+    if getattr(args, "force", False):
+        return None
+    return R.budget_blocked(R.session_cost(env))
 
-    Reports FOUR lists and they are not collapsible: registered, brought up,
-    refused-by-the-cap, and failed. A driver that printed one number would hide
-    exactly the case this is built around — most fleets deliberately waiting.
+
+def op_epics(env: dict, args) -> dict:
+    """Register one fleet per epic, then bring up to `--promote` of them up.
+
+    NO CAP (founder ruling R11, 2026-10-07, retired D-14). `--promote N` is the
+    DRIVER's staging flag — how many fleets this run launches — not a registry
+    limit: no slot is reserved before a launch, because writing `up` before the
+    panes exist is the lie R11 ends. Each launch is preceded by the token-ceiling
+    check, and `op_up` records the state the launch actually earned.
+
+    Reports the lists separately — registered, up, failed — plus the reason a
+    run stopped early on the token ceiling.
     """
     units = discover_units(args)
     if args.limit:
@@ -2597,24 +2830,18 @@ def op_epics(env: dict, args) -> dict:
             continue
         registered.append(item["fleet"])
 
-    up, refused = [], []
-    # ONE ATTEMPT PER SLOT. A cap refusal costs nothing and does not consume an
-    # attempt, but a failed `up` does — otherwise a systemic failure (a missing
-    # claude binary, a full pane limit) walks the whole list and opens panes on
-    # every one of twenty-five fleets before anybody sees the first error.
+    up, blocked = [], None
+    # ONE ATTEMPT PER PROMOTION. A failed `up` consumes one, so a systemic
+    # failure (a missing claude binary, a full pane limit) stops after
+    # --promote attempts instead of walking every epic.
     attempts = 0
     for item in plan:
         if item["fleet"] not in registered:
             continue
         if len(up) >= args.promote or attempts >= args.promote:
-            continue
-        # Ask the REGISTRY for the slot before opening a single pane: a fleet
-        # that opens 6 panes and is then refused has already spent what the cap
-        # exists to protect.
-        slot = registry(env, "state", item["fleet"], "up")
-        if slot.get("error"):
-            refused.append({"fleet": item["fleet"], "reason": slot["error"]})
-            continue
+            break
+        if (blocked := epics_budget_blocked(env, args)):
+            break
         sub = argparse.Namespace(**vars(args))
         sub.fleet = item["fleet"]
         # The child `up` runs on ONE epic doc, so its --from is that doc.
@@ -2630,41 +2857,49 @@ def op_epics(env: dict, args) -> dict:
             # 2026-08-11 (see op_up's `units` parameter and units_from_file).
             built = op_up(env, sub, units=[{"unit": item["unit"], "title": item["title"],
                                             "sources": item["sources"]}])
-            up.append({"fleet": item["fleet"], "panes": built.get("panes")})
         except SystemExit:
-            # The slot was taken and nothing came up. Hand it back, or the cap
-            # leaks a place nobody is using.
-            registry(env, "state", item["fleet"], "registered")
-            failed.append({"fleet": item["fleet"], "error": "up failed; slot released"})
+            failed.append({"fleet": item["fleet"], "error": "up failed; state left registered"})
+            continue
+        if not built.get("ok", True):
+            failed.append({"fleet": item["fleet"],
+                           "error": "launch incomplete",
+                           "problems": (built.get("launch") or {}).get("problems", [])})
+            continue
+        up.append({"fleet": item["fleet"], "panes": built.get("panes"),
+                   "state": built.get("state")})
 
     return {"epics": len(plan), "registered": registered,
-            "up": up, "refused_by_cap": refused, "failed": failed,
-            "next": "python3 fleetctl.py epics-promote   # when a fleet goes down"}
+            "up": up, "failed": failed, "budget_blocked": blocked,
+            "next": "python3 fleetctl.py epics-promote   # bring the next waiting fleet up"}
 
 
 def op_epics_promote(env: dict, args) -> dict:
-    """Bring the next registered fleet up, if the cap has a free slot.
+    """Bring the next waiting fleet up.
 
-    The loop that makes twenty-five affordable: one fleet finishes, one starts.
-    The registry decides whether there is room, so this cannot promote past the
-    cap even if it is run in a loop by something that has lost count.
+    NO CAP (R11). "Waiting" is a `registered` row whose member panes are NOT
+    live: on a daemon still running a pre-R11 binary, a live fleet past the third
+    reads `registered`, and promoting it would rebuild a running fleet over
+    itself. The token ceiling is checked before the launch, as `up` does.
     """
     listing = registry(env, "ls")
     if listing.get("error"):
         die(f"cannot read the fleet registry: {listing['error']}")
 
     fleets = listing.get("fleets") or []
-    waiting = [f for f in fleets if f.get("state") == "registered"]
+    panes = R.list_panes(env)
+    waiting = [f for f in fleets if f.get("state") == "registered"
+               and not fleet_liveness(f, panes)["panes_live"]]
+    skipped_live = [f["name"] for f in fleets if f.get("state") == "registered"
+                    and fleet_liveness(f, panes)["panes_live"]]
     if not waiting:
         return {"promoted": None, "reason": "no fleet is waiting to come up",
+                "skipped_live": skipped_live,
                 "up": [f["name"] for f in fleets if f.get("state") == "up"]}
+
+    if (blocked := epics_budget_blocked(env, args)):
+        return {"promoted": None, "reason": blocked, "skipped_live": skipped_live}
 
     target = waiting[0]
-    slot = registry(env, "state", target["name"], "up")
-    if slot.get("error"):
-        return {"promoted": None, "reason": slot["error"],
-                "up": [f["name"] for f in fleets if f.get("state") == "up"]}
-
     sub = argparse.Namespace(**vars(args))
     sub.fleet = target["name"]
     sub.source = target.get("source") or ""
@@ -2674,12 +2909,10 @@ def op_epics_promote(env: dict, args) -> dict:
     # `units` parameter for what re-discovery cost.
     unit = {"unit": "01", "title": _title_of(sub.source) if sub.source else target["name"],
             "sources": [sub.source] if sub.source else []}
-    try:
-        built = op_up(env, sub, units=[unit])
-    except SystemExit:
-        registry(env, "state", target["name"], "registered")
-        die(f"promoting {target['name']} failed; its slot was released")
-    return {"promoted": target["name"], "panes": built.get("panes")}
+    built = op_up(env, sub, units=[unit])
+    return {"promoted": target["name"] if built.get("ok", True) else None,
+            "panes": built.get("panes"), "state": built.get("state"),
+            "launch": built.get("launch"), "skipped_live": skipped_live}
 
 
 
@@ -3139,7 +3372,7 @@ def main() -> None:
     sub.add_parser("panes")
     sub.add_parser("fleets")
 
-    e = sub.add_parser("epics", help="one fleet per epic doc, promoted into the cap")
+    e = sub.add_parser("epics", help="one fleet per epic doc; --promote N of them brought up")
     # dest="source", like every other --from in this file: discover_units reads
     # args.source. Found live 2026-08-11 — a second dest made the driver see an
     # empty path and refuse a directory that was right there.
@@ -3156,7 +3389,7 @@ def main() -> None:
     e.add_argument("--max-units", type=int, default=30)
     e.add_argument("--limit", type=int, default=0, help="use only the first N epics")
     e.add_argument("--promote", type=int, default=3,
-                   help="how many to bring up now; the REGISTRY holds the real cap")
+                   help="how many fleets this run brings up (a driver staging flag; there is no registry cap since R11)")
     e.add_argument("--template", default="epic", choices=sorted(TEMPLATES))
     e.add_argument("--workers", type=int, default=1)
     e.add_argument("--mission", default="")
@@ -3211,6 +3444,12 @@ def main() -> None:
                    help="a board every agent also posts to, besides its fleet's own")
     p.add_argument("--replace", action="store_true")
 
+    q = sub.add_parser("reconcile", help="set each fleet's registry state from its live panes (dry run unless --apply)")
+    q.add_argument("--apply", action="store_true",
+                   help="write the changes; without it nothing is written")
+    q = sub.add_parser("stamp-resume", help="arm the restart sweep on fleet claudes launched before R12 (dry run unless --apply)")
+    q.add_argument("--apply", action="store_true",
+                   help="write the stamps; without it nothing is written")
     sub.add_parser("tree", help="the org chart, live")
     sub.add_parser("verify", help="screen-check every agent actually came up")
     sub.add_parser("listen", help="queue messaging: start every member's board listener "
@@ -3310,7 +3549,19 @@ def main() -> None:
     if args.cmd == "epics-promote":
         return out(op_epics_promote(env, args))
     if args.cmd == "up":
-        return out(op_up(env, args))
+        res = op_up(env, args)
+        out(res)
+        # A failed launch exits non-zero: a driver reading the exit code must
+        # not count a fleet whose panes vanished as one that came up. A launch
+        # that succeeded but whose `up` the registry refused (a pre-R11 daemon)
+        # exits 0 — the agents ARE running, and a retry would launch them twice.
+        if not res.get("ok", True):
+            raise SystemExit(3)
+        return None
+    if args.cmd == "reconcile":
+        return out(op_reconcile(env, apply=args.apply))
+    if args.cmd == "stamp-resume":
+        return out(op_stamp_resume(env, apply=args.apply))
 
     # --file must name a REGULAR FILE that still exists. Checked here, before
     # the fleet is even resolved, because this is argument validation and a

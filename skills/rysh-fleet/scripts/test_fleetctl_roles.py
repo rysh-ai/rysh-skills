@@ -249,6 +249,22 @@ class TestBriefs(unittest.TestCase):
         text = self._brief(flat_manifest(), "wkr-01-x")
         self.assertIn("fmgr-01-x", text)
 
+    def test_only_the_fleet_head_is_briefed_on_the_global_board(self):
+        # The global board is a board of FLEETS, not of agents (founder order
+        # 2026-10-03), and every post there wakes every fleet reading it. A
+        # manager or worker told to post there turns one fleet's chatter into
+        # every fleet's interrupt, so only the head of the chain gets the section.
+        section = "## The global fleet board: `fleet`"
+        for man, head, others in (
+                (flat_manifest(), "e-roadmap", ("e-ceo", "fmgr-01-x", "wkr-01-x")),
+                (legacy_manifest(), "old-ceo", ("mgr-01-x", "wkr-01-x"))):
+            man["global_board"] = "fleet"
+            self.assertIn(section, self._brief(man, head),
+                          f"{head} heads the fleet and must be told about the global board")
+            for label in others:
+                self.assertNotIn(section, self._brief(man, label),
+                                 f"{label} is not the fleet head and must keep to its own board")
+
 
 
 

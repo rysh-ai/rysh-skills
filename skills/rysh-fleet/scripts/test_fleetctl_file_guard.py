@@ -22,9 +22,39 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FLEETCTL = os.path.join(HERE, "fleetctl.py")
 
 
-def run(args, cwd=None):
-    return subprocess.run([sys.executable, FLEETCTL] + args,
-                          capture_output=True, text=True, cwd=cwd, timeout=60)
+# ORDER-7c: HERMETIC. fleetctl's main() resolves the session (ryshfan.discover)
+# BEFORE it validates --file, and discover reads the daemons running on this
+# machine: with two or more running and no RYSH_SESSION it refuses, so these
+# tests passed or failed depending on what other agents had started (e.g. a
+# throwaway `iso-probe-*` or `story-014` session). The launcher runs the SAME
+# fleetctl.py as __main__, in its own process, with the real ryshfan loaded by
+# path and only `discover` pinned to a temp workspace. No live daemon is read.
+LAUNCH = r"""
+import importlib.util, os, runpy, sys
+here, ws = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location(
+    "ryshfan", os.path.join(here, "..", "..", "rysh-fanout", "scripts", "ryshfan.py"))
+R = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(R)
+R.discover = lambda session: {"workspace": ws, "session": "file-guard-test",
+                              "bin": "/nonexistent/rysh", "nats_host": "127.0.0.1",
+                              "nats_port": 1}
+sys.modules["ryshfan"] = R
+sys.argv = [os.path.join(here, "fleetctl.py")] + sys.argv[3:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+
+def run(args, cwd=None, input=None):
+    ws = tempfile.mkdtemp(prefix="fleetctl-file-guard-")
+    try:
+        return subprocess.run([sys.executable, "-c", LAUNCH, HERE, ws] + args,
+                              capture_output=True, text=True, cwd=cwd, timeout=60,
+                              input=input, env={k: v for k, v in os.environ.items()
+                                                if not k.startswith("RYSH_")})
+    finally:
+        import shutil
+        shutil.rmtree(ws, ignore_errors=True)
 
 
 class FileGuard(unittest.TestCase):
@@ -46,10 +76,8 @@ class FileGuard(unittest.TestCase):
         os.path.isfile() returns TRUE and the naive guard passes -- while the
         recipient still cannot read it, because that temp file dies with the
         sender. The path being process-local is the property that matters."""
-        r = subprocess.run(
-            [sys.executable, FLEETCTL, "--fleet", "nosuch", "msg", "someone",
-             "--file", "/dev/stdin"],
-            input="a heredoc body\n", capture_output=True, text=True, timeout=60)
+        r = run(["--fleet", "nosuch", "msg", "someone", "--file", "/dev/stdin"],
+                input="a heredoc body\n")
         combined = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0,
                             "a heredoc-backed /dev/stdin must still be refused")

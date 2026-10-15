@@ -57,14 +57,22 @@ def _install_ryshfan_stub():
     m.visible_solid = lambda x: x
     m.is_busy = lambda lines: False
     m.has_composer = lambda lines: True
-    sys.modules["ryshfan"] = m
+    # NOT installed in sys.modules here: fleetctl_testing loads fleetctl against it
+    # under a private name and puts sys.modules back (ORDER-7c test isolation).
     return m
 
 
 STUB = _install_ryshfan_stub()
-os.environ.setdefault("RYSHFAN_DIR", HERE)
 sys.path.insert(0, HERE)
-import fleetctl  # noqa: E402
+from fleetctl_testing import load_fleetctl_with_stub  # noqa: E402
+
+# A PRIVATE fleetctl bound to STUB; sys.modules["ryshfan"/"fleetctl"] stay untouched.
+fleetctl = load_fleetctl_with_stub(STUB, "fleetctl__test_board")
+
+# The real function, captured before any test patches it. `fleetctl.subprocess` IS
+# the global subprocess module, so "restoring" to `subprocess.run` after a patch
+# restored the patch itself and leaked it into every later subprocess test.
+_REAL_RUN = subprocess.run
 
 
 def make_env_and_manifest(tmp):
@@ -133,7 +141,7 @@ class MirrorCannotBreakDelivery(unittest.TestCase):
         try:
             self._assert_delivered(self._deliver())
         finally:
-            fleetctl.subprocess.run = subprocess.run
+            fleetctl.subprocess.run = _REAL_RUN
 
     def test_delivery_survives_mirror_timeout(self):
         def slow(*a, **k):
@@ -142,7 +150,7 @@ class MirrorCannotBreakDelivery(unittest.TestCase):
         try:
             self._assert_delivered(self._deliver())
         finally:
-            fleetctl.subprocess.run = subprocess.run
+            fleetctl.subprocess.run = _REAL_RUN
 
     def test_delivery_survives_no_rysh_binary(self):
         # env["bin"] points at a path that does not exist: the real failure when
@@ -190,7 +198,7 @@ class MirrorShape(unittest.TestCase):
     def tearDown(self):
         fleetctl.ansa_send = self._real_ansa_send
         fleetctl._ansa_capable = None
-        fleetctl.subprocess.run = subprocess.run
+        fleetctl.subprocess.run = _REAL_RUN
         os.environ.pop("RYSH_FLEET_BOARD", None)
 
     def test_f21_uses_the_agent_door_not_the_human_one(self):
@@ -283,6 +291,7 @@ class MirrorShape(unittest.TestCase):
         order = []
         real_save = fleetctl.save_manifest
         fleetctl.save_manifest = lambda env, man: (order.append("save"), real_save(env, man))[1]
+        self.addCleanup(setattr, fleetctl, "save_manifest", real_save)   # 7c: never leak a patch
         fleetctl.subprocess.run = lambda argv, **k: order.append("mirror") or types.SimpleNamespace(
             stdout="", stderr="", returncode=0)
         fleetctl.deliver(self.env, self.man, SENDER, RECIPIENT, "hi", "REPORT", None)
