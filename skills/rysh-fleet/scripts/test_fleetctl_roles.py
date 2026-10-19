@@ -396,7 +396,7 @@ class TestPathsAreUnambiguous(unittest.TestCase):
 
     def test_the_envelope_no_longer_carries_the_worktree(self):
         # the worktree path made the envelope too long for one
-        # typed line; F-33 is served by ABSOLUTE paths (briefs) and by the
+        # typed line; path resolution is served by ABSOLUTE paths (briefs) and by the
         # absolute pointer into the sender's tree (test_fleetctl_ansa_relief).
         man = {"fleet": "f"}
         sender = {"role": "worker", "label": "wkr-01", "unit": "01",

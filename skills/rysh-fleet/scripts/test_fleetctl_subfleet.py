@@ -44,15 +44,15 @@ def args(**kw):
 
 
 def epic_quad():
-    return {"fleet": "epic-9-e9-agent", "template": "epic-quad", "tab": "tab-9",
-            "roadmap_dir": "new_roadmap/fleet", "agent": "claude", "agent_args": "--x",
-            "units": [{"unit": "9", "title": "E9 agent fleet", "sources": ["new_roadmap/epics/E9.md"]}],
+    return {"fleet": "epic-9-example", "template": "epic-quad", "tab": "tab-9",
+            "roadmap_dir": "docs/fleet", "agent": "claude", "agent_args": "--x",
+            "units": [{"unit": "9", "title": "Example epic", "sources": ["docs/epics/example.md"]}],
             "members": [
-                {"role": "roadmap-manager", "unit": "-", "pane": "lead-0000", "label": "epic-9-e9-agent-roadmap", "parent": None},
-                {"role": "fleet-manager", "unit": "9", "pane": "fmgr-0000", "label": "fmgr-9-e9-agent-fleet",
-                 "parent": "lead-0000", "title": "E9 agent fleet"},
-                {"role": "worker", "unit": "9", "pane": "wkr1-0000", "label": "wkr-9-e9-agent-fleet",
-                 "parent": "fmgr-0000", "title": "E9 agent fleet"},
+                {"role": "roadmap-manager", "unit": "-", "pane": "lead-0000", "label": "epic-9-example-roadmap", "parent": None},
+                {"role": "fleet-manager", "unit": "9", "pane": "fmgr-0000", "label": "fmgr-9-example-epic",
+                 "parent": "lead-0000", "title": "Example epic"},
+                {"role": "worker", "unit": "9", "pane": "wkr1-0000", "label": "wkr-9-example-epic",
+                 "parent": "fmgr-0000", "title": "Example epic"},
             ]}
 
 
