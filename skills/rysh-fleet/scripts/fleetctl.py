@@ -3341,9 +3341,9 @@ def op_subfleet(env: dict, man: dict, member: dict, count: int, args) -> dict:
 
     TWO fixes. (1) The tier comes from the TEMPLATE (manager_tier_roles),
     not the literal "manager", which refused every epic template's
-    `fleet-manager`. (2) Since E-42 the roster is `man["members"]`
+    `fleet-manager`. (2) Since the members manifest, the roster is `man["members"]`
     and `man["units"]` holds only unit metadata, so the new workers are appended
-    to `members` with `parent` = the builder; the pre-E-42 shape, with its
+    to `members` with `parent` = the builder; the older manifest shape, with its
     `units[i].manager/workers`, is still read and written for old manifests.
     """
     tier = manager_tier_roles(man)
@@ -3359,7 +3359,7 @@ def op_subfleet(env: dict, man: dict, member: dict, count: int, args) -> dict:
         mine = [p for p in man["members"]
                 if p.get("role") == "worker" and p.get("parent") == member["pane"]]
         sink = man["members"]
-    else:  # pre-E-42 manifest
+    else:  # older manifest shape
         unit = next(u for u in man["units"] if u["manager"]["pane"] == member["pane"])
         mine = unit["workers"]
         sink = unit["workers"]

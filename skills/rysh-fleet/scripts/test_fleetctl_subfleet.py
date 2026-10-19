@@ -7,7 +7,7 @@ Two defects pinned here:
      every epic template's `fleet-manager` was refused: "only a manager builds a
      sub-fleet; the CEO delegates to managers".
   2. Past that test, op_subfleet read `man["units"][i]["manager"]` and appended
-     to `unit["workers"]` — the pre-E-42 shape (E-42 moved the roster to
+     to `unit["workers"]` — the older manifest shape (the members manifest moved the roster to
      `members`). Every fleet built since then has no such keys, so a sub-fleet
      could not be built in ANY template.
 
