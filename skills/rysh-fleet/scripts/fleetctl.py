@@ -168,6 +168,28 @@ def _list_panes(env: dict, pane_id: str | None = None) -> list[dict]:
 R.list_panes = _list_panes
 
 
+def target_pane(env: dict, pane_id: str) -> dict:
+    """One member's pane record, for the commands that only watch that member.
+
+    `_list_panes` walks the whole session: one
+    `##tab list` plus one `##pane list` per tab, every one of them a job in the
+    single WorkspaceActor mailbox that ANSA sends also queue in. `collect` and
+    `wait` called it once per invocation, and fleets drive them from shell loops,
+    so a 28-tab session paid ~30 queued jobs per poll round. The record they
+    need — the pane's id and its meta, which op_wait reads for the session id
+    and prompt time — is in the TARGET's own tab, and `##pane list --meta` run
+    in that pane lists exactly that tab: one job. Watching it afterwards is
+    `vt_screen`, a pane-subject request that never touches the mailbox.
+
+    Falls back to the full walk only if the target is not in its own listing
+    (it moved tabs mid-call), so a correct answer never depends on the shortcut.
+    """
+    pane = R.find_pane_opt(_ryshfan_list_panes(env, pane_id), pane_id)
+    if pane is not None:
+        return pane
+    return R.find_pane(R.list_panes(env), pane_id)
+
+
 # --------------------------------------------------------------------------
 # Fleet manifest — the org chart, on disk and on the panes
 # --------------------------------------------------------------------------
@@ -1384,7 +1406,7 @@ def start_agent(env: dict, pane: dict, prompt: str, cwd: str | None,
         run_in = cwd or env.get("workspace") or os.getcwd()
         trust = codex_trust(run_in, fleet)
         launched_at = int(time.time())
-        out = R.cmd_to_pane(env, pane, f'{cd}{R.CLEAN_ENV} codex {agent_args} "$(cat {path})"')
+        out = R.cmd_to_pane(env, pane, f'{cd}{R.clean_env(env, "codex")} codex {agent_args} "$(cat {path})"')
         res = {"session_id": "", "prompt_file": path, "agent": agent,
                "trusted": trust, "output": out.strip()}
         if is_board_comm(comm):
@@ -1417,7 +1439,7 @@ def start_agent(env: dict, pane: dict, prompt: str, cwd: str | None,
     # worktree when it has one, the workspace otherwise.
     launch_dir = cwd or env.get("workspace")
     cd_line = f"cd {shlex.quote(launch_dir)} && " if launch_dir else ""
-    out = R.cmd_to_pane(env, pane, f'{cd_line}{R.CLEAN_ENV} claude {args} "$(cat {path})"')
+    out = R.cmd_to_pane(env, pane, f'{cd_line}{R.clean_env(env, "claude")} claude {args} "$(cat {path})"')
     return {"session_id": session_id, "prompt_file": path, "agent": agent,
             "cwd": launch_dir, "launch_args": agent_args, "output": out.strip()}
 
@@ -1655,29 +1677,78 @@ def envelope_line(man: dict, sender: dict, recipient: dict, kind: str,
                   msg_id: str) -> str:
     """The stamp on the front of every delivered message.
 
-    IT NAMES THE SENDER'S WORKTREE (`F-33`). Every agent works in its own, so a
-    relative path in a report — `out/note-1.md` — names one file per agent, and
-    the workspace copy a human opens is usually empty. The protocol tells agents
-    to cite absolute paths; this is the half that does not depend on them
-    remembering, because the recipient can resolve any relative path the sender
-    used against the tree the sender was standing in.
-
-    Omitted entirely when the sender has no worktree — the human, or a fleet
-    built without `--worktrees` — rather than printed as an empty field: a blank
-    where a path belongs reads as "the workspace", which is the very confusion
-    this exists to remove.
+    THE WORKTREE PATH IS NO LONGER IN THE ENVELOPE.
+    It made the envelope ~305 chars with the longest live names, so no typed line
+    could stay within ANSA_LINE_MAX. Path resolution is still served, by the two places a
+    path actually travels: every brief requires ABSOLUTE paths, and an over-long
+    body goes in a file whose pointer is a path INTO the sender's own
+    worktree (`<worktree>/out/msgs/msg-NNNN.md`), shown and recorded RELATIVE TO
+    THE WORKSPACE ROOT (ws_rel). The envelope keeps who is
+    talking: fleet, kind, FROM role+label (unit, 8-char pane id), TO role+label
+    (8-char pane id) and the message id.
     """
-    wt = sender.get("worktree") or ""
-    at = f" at {wt}" if wt else ""
     return (f"[FLEET {man['fleet']} | {kind} | FROM {sender['role']} "
             f"{sender['label']} (unit {sender.get('unit', '-')}, pane "
-            f"{short(sender['pane'])}{at}) | TO {recipient['role']} "
+            f"{short(sender['pane'])}) | TO {recipient['role']} "
             f"{recipient['label']} (pane {short(recipient['pane'])}) | {msg_id}]")
 
 
 def next_msg_id(man: dict) -> str:
     man["msg_seq"] = man.get("msg_seq", 0) + 1
     return f"msg-{man['msg_seq']:04d}"
+
+
+# One typed line of at most ANSA_LINE_MAX chars
+# INCLUDING the envelope; a longer message sends its body as a file and types a
+# pointer. ONE constant for both the trigger and the pointer-line ceiling. Why a
+# limit at all: above ~800 bytes claude takes typed text as a paste, the daemon's
+# confirm loop then holds the session's one queue re-pressing Enter (12–28 s),
+# and the one measured truncation on 2026-10-09 kept the last 42 bytes of a
+# 1064-byte inline body.
+ANSA_LINE_MAX = 350
+
+
+def ws_rel(env: dict, path: str) -> str:
+    """the form of a message-body path
+    that fleetctl SHOWS and RECORDS: relative to the workspace root.
+
+    Absolute paths stay internal (file I/O and the --file checks). Receivers run
+    from the workspace root (rysh_local needs it), so the relative path resolves
+    for them, and no typed line, board post or manifest record carries a home
+    directory or a username. A path OUTSIDE the workspace is REFUSED: there is
+    deliberately no absolute or $HOME fallback. The refusal names the file by
+    its base name only, never by its absolute path.
+    """
+    ws = os.path.realpath(env["workspace"])
+    p = os.path.realpath(path)
+    if os.path.commonpath([ws, p]) != ws:
+        die(f"message body file {os.path.basename(path)!r} is outside the workspace: "
+            f"refused. fleetctl shows and records a body path only "
+            f"RELATIVE to the workspace root, never an absolute or $HOME path. Write "
+            f"the body under the workspace (e.g. your worktree's out/) and pass that.")
+    return os.path.relpath(p, ws)
+
+
+def body_file_for(env: dict, man: dict, sender: dict, msg_id: str) -> str:
+    """Where an over-long inline body is written, as an ABSOLUTE path for I/O
+    (deliver() shows and records it workspace-relative, via ws_rel).
+
+    The sender's own worktree `out/msgs/` when it has one (it is where its other
+    evidence already lives, and the envelope names that tree). Otherwise a
+    durable per-fleet directory under `worktrees/` (gitignored, survives a
+    reboot) — never /private/tmp, whose session scratch dirs a reboot erases.
+    Named `msg-NNNN.md` (short, so the pointer line fits
+    ANSA_LINE_MAX): message ids are unique per fleet, and a worktree belongs to
+    one sender, so two sends can never overwrite each other's body.
+    """
+    wt = sender.get("worktree") or ""
+    if wt and os.path.isdir(wt):
+        d = os.path.join(wt, "out", "msgs")
+    else:
+        d = os.path.join(env["workspace"], "worktrees", f".{man['fleet']}-msgs")
+    ws_rel(env, os.path.join(d, f"{msg_id}.md"))  # refuse BEFORE creating anything outside
+    os.makedirs(d, exist_ok=True)
+    return os.path.abspath(os.path.join(d, f"{msg_id}.md"))
 
 
 def deliver(env: dict, man: dict, sender: dict, recipient: dict, body: str,
@@ -1694,25 +1765,37 @@ def deliver(env: dict, man: dict, sender: dict, recipient: dict, body: str,
     # sections rather than one long one: the send happens between them, because
     # holding a file lock across a network delivery would serialise the fleet on
     # its slowest recipient.
+    # `body_file` stays ABSOLUTE for I/O; `shown` is what is typed,
+    # posted and recorded. Refused (outside the workspace) before an id is taken.
+    shown = ws_rel(env, body_file) if body_file else None
     with manifest_txn(env, man["fleet"]) as fresh:
         msg_id = next_msg_id(fresh)
         man["msg_seq"] = fresh["msg_seq"]  # keep the caller's view current
     env_line = envelope_line(man, sender, recipient, kind, msg_id)
     if body_file:
         line = (f"{env_line} {kind.title()} from your {sender['role']} "
-                f"{sender['label']}. Read {body_file} in full and act on it. "
+                f"{sender['label']}. Read {shown} in full and act on it. "
                 f"Reply per the fleet protocol: open your answer with your own "
                 f"envelope line naming yourself.")
     else:
         flat = " ".join(body.split())
         line = (f"{env_line} {flat} -- reply opening with your own envelope line "
                 f"naming yourself.")
+        if len(line) > ANSA_LINE_MAX:
+            # the body goes in a file, verbatim (newlines and all, which the
+            # typed line could never carry), and only the envelope plus a pointer
+            # is typed. The envelope stays intact: it is who is talking.
+            body_file = body_file_for(env, man, sender, msg_id)
+            shown = ws_rel(env, body_file)
+            with open(body_file, "w") as fh:
+                fh.write(body)
+            line = f"{env_line} Read {shown} in full."
     if is_board_comm(fleet_comm(man)):
-        out = board_send(env, man, sender, recipient, line, msg_id, body_file)
+        out = board_send(env, man, sender, recipient, line, msg_id, shown)
     else:
         out = fleet_send(env, recipient, line)
     rec = {"msg_id": msg_id, "kind": kind, "from": sender["label"],
-           "to": recipient["label"], "body_file": body_file,
+           "to": recipient["label"], "body_file": shown,
            "submitted": bool(out.get("ok", True)), "at": int(time.time()),
            # `via` records WHICH PATH CARRIED THIS, and it survives the W4-3b
            # cutover to a single path on purpose: it is the only way to answer
@@ -1737,7 +1820,7 @@ def deliver(env: dict, man: dict, sender: dict, recipient: dict, body: str,
     # Not under polling-stream: there the message IS a board post already, and
     # a mirror would put every order on the board twice.
     if not is_board_comm(fleet_comm(man)):
-        board_mirror(env, man, sender, recipient, rec, body, body_file)
+        board_mirror(env, man, sender, recipient, rec, body, shown)
     return {**rec, "envelope": env_line, "send": out}
 
 
@@ -1758,10 +1841,23 @@ def deliver(env: dict, man: dict, sender: dict, recipient: dict, body: str,
 # work orders to a confident `ok: True`; the receipt is the dangerous part, not
 # the failure.
 
-ANSA_TIMEOUT = 20.0
+# ABOVE the CLI's own budget, never below it. `rysh ansa send`
+# gives up by itself after 3 s to connect + 30 s for the reply
+# (internal/cli/client.go:26-28, internal/cli/commands.go:30), and a request it
+# gave up on is STILL served by the daemon later: once a message was
+# typed into its pane 2 s after fleetctl, at 20 s, had reported "nothing was
+# delivered". 45 s lets the CLI always finish first and say what happened; the
+# measured send cost under load was a 15 s median and a 29 s maximum, so 45 s
+# also covers a delivered send instead of killing it mid-flight.
+ANSA_TIMEOUT = 45.0
+ANSA_PROBE_TIMEOUT = 45.0
+# The CLI's own timeout text and ours: both mean
+# "unknown", not "failed". The daemon may still type the message.
+ANSA_PENDING_MARKERS = ("timeout waiting for reply", "TimeoutExpired")
+ANSA_PENDING = ("PENDING: may still arrive; check the target's screen before resending")
 
 
-# W4-3b: the typing path is GONE. There is no ansa_enabled() any more -- a flag
+# the typing path is GONE. There is no ansa_enabled() any more -- a flag
 # with one legal value is a decision nobody made, and leaving it would invite
 # someone to set it back to a path that no longer exists.
 
@@ -1778,15 +1874,102 @@ ANSA_ROUTE_CODES = ("no_target", "no_text", "unknown_target", "ambiguous_target"
                     "directory_unavailable")
 
 
+# The probe is a full `ansa send` into the same single
+# WorkspaceActor queue as the message it guards, and it ran once per fleetctl
+# PROCESS — i.e. before every send — doubling that queue's load. All 14 measured
+# delivery failures in one busy session were this probe timing out. A POSITIVE verdict
+# is now kept on disk for ANSA_PROBE_TTL, keyed to the daemon it was measured on.
+ANSA_PROBE_TTL = 30 * 60
+# Send failures that say the ROUTE is missing, not that the queue is slow: the
+# binary lacks the subcommand, or the session it names is gone. A timeout is
+# deliberately NOT one of these — re-probing on every timeout would add load
+# exactly when the queue is already too deep.
+ANSA_CAPABILITY_ERRORS = ("unknown command", "unknown ansa subcommand",
+                          "is not alive", "not found", "no responders")
+
+
+def ansa_probe_cache_path(env: dict) -> str:
+    """Where the verdict lives: `.rysh/fleet/`, beside the manifests.
+
+    Runtime state, and already ignored by git there (`.rysh/fleet/` in
+    .gitignore), workspace-scoped like the sessions it describes, and durable
+    across reboots unlike a scratch dir. NOT `.json`: `fleetctl fleets` lists
+    every `*.json` in that directory as a fleet.
+    """
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", env.get("session") or "default")
+    return os.path.join(fleet_dir(env), f".ansa-probe-{name}.cache")
+
+
+def daemon_identity(env: dict) -> dict | None:
+    """The running daemon, as the session record and the CLI binary describe it.
+
+    A restart changes the pid, an upgrade the bin_hash/version, and a new CLI
+    binary its size/mtime; any of them invalidates a cached verdict. None when
+    the record cannot be read: then nothing is cached (fail closed).
+    """
+    rec_path = os.path.join(env.get("workspace") or "", ".rysh", "sessions",
+                            f"{env.get('session') or 'default'}.json")
+    try:
+        with open(rec_path) as fh:
+            rec = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not rec.get("pid"):
+        return None
+    bin_path = shutil.which(env.get("bin") or "") or env.get("bin") or ""
+    try:
+        st = os.stat(bin_path)
+        cli = [os.path.realpath(bin_path), st.st_size, int(st.st_mtime)]
+    except OSError:
+        cli = [bin_path]
+    return {"pid": rec.get("pid"), "bin_hash": rec.get("bin_hash"),
+            "version": rec.get("version"), "nats_port": rec.get("nats_port"), "cli": cli}
+
+
+def cached_ansa_capable(env: dict) -> bool:
+    ident = daemon_identity(env)
+    if ident is None:
+        return False
+    try:
+        with open(ansa_probe_cache_path(env)) as fh:
+            c = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return (c.get("capable") is True and c.get("identity") == ident
+            and 0 <= time.time() - float(c.get("at", 0)) < ANSA_PROBE_TTL)
+
+
+def remember_ansa_capable(env: dict) -> None:
+    ident = daemon_identity(env)
+    if ident is None:
+        return
+    path = ansa_probe_cache_path(env)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump({"capable": True, "at": time.time(), "identity": ident}, fh)
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+
+
+def forget_ansa_capable(env: dict) -> None:
+    global _ansa_capable
+    _ansa_capable = None
+    with contextlib.suppress(OSError):
+        os.remove(ansa_probe_cache_path(env))
+
+
 def ansa_capable(env: dict) -> bool:
     """Does the RUNNING SESSION actually route ANSA?
 
     A DEPLOYMENT prerequisite, not a code one, and it is the thing that stopped
-    this cutover: `macmini` had ANSA merged while the running sidecar was built
+    this cutover: a branch had ANSA merged while the running sidecar was built
     before it existed, so every message since the flip quietly took the
     fallback. Source-merged is not deployed.
 
-    E9 Q2, GAP A — WHAT THIS USED TO MEASURE. The old probe ran `<bin> ansa` and
+    WHAT THIS USED TO MEASURE. The old probe ran `<bin> ansa` and
     asked whether the string "unknown command" came back, i.e. *does this file on
     disk have an `ansa` subcommand*. That is a different question from the one the
     function is named for, and the difference is the entire hazard: a session is a
@@ -1813,6 +1996,10 @@ def ansa_capable(env: dict) -> bool:
     session restart), but not within one fleetctl invocation.
     """
     global _ansa_capable, _ansa_probe_detail
+    if _ansa_capable is None and cached_ansa_capable(env):
+        # a positive verdict measured on THIS daemon within the TTL.
+        _ansa_capable = True
+        _ansa_probe_detail = "cached verdict (" + ansa_probe_cache_path(env) + ")"
     if _ansa_capable is None:
         # An id-shaped sentinel: pane ids are uuids and given-names need a
         # leading `@`, so this can match neither, and the pid keeps two
@@ -1822,7 +2009,7 @@ def ansa_capable(env: dict) -> bool:
                 "--session", env["session"], "--", "ansa capability probe"]
         try:
             proc = subprocess.run(argv, cwd=env.get("workspace") or None,
-                                  capture_output=True, text=True, timeout=15)
+                                  capture_output=True, text=True, timeout=ANSA_PROBE_TIMEOUT)
             output = (proc.stdout or "") + (proc.stderr or "")
             _ansa_probe_detail = output.strip()[:400]
             # rc 0 would mean the sentinel somehow resolved — impossible in
@@ -1832,6 +2019,8 @@ def ansa_capable(env: dict) -> bool:
         except Exception as exc:
             _ansa_probe_detail = f"{type(exc).__name__}: {exc}"
             _ansa_capable = False
+        if _ansa_capable:
+            remember_ansa_capable(env)   # only a POSITIVE verdict is ever cached
     return _ansa_capable
 
 
@@ -1843,7 +2032,7 @@ def require_ansa_capable(env: dict) -> None:
     the cause once, up front, is the difference between an outage you can fix
     and one you have to diagnose.
 
-    E9 Q2, GAP B — WHERE THIS IS CALLED FROM. `fleet_send` was the only caller,
+    WHERE THIS IS CALLED FROM. `fleet_send` was the only caller,
     so the refusal arrived at the FIRST MESSAGE: after `up` had opened a tab,
     a lane per role, a pane per unit, cut a worktree each and written a brief
     each. The check was correct and landed after the entire cost, leaving a
@@ -1856,6 +2045,14 @@ def require_ansa_capable(env: dict) -> None:
     the session.
     """
     if not ansa_capable(env):
+        if any(m in _ansa_probe_detail for m in ANSA_PENDING_MARKERS):
+            # a probe that timed out met a BUSY queue, not a missing route
+            # (all 14 measured "not capable" refusals on 2026-10-09 were this).
+            # The probe itself delivers nothing, so this message really was not sent.
+            die(f"session {env['session']!r} did not answer the ANSA capability probe "
+                f"within {ANSA_PROBE_TIMEOUT:.0f} s: it is BUSY (the session's ANSA queue), "
+                f"not missing ANSA. This message was NOT sent. Wait, then send once "
+                f"(do not retry in a loop). Probe: {_ansa_probe_detail!r}.")
         detail = f" The probe answered: {_ansa_probe_detail!r}." if _ansa_probe_detail else ""
         die(f"fleet delivery requires a live ANSA route, and session "
             f"{env['session']!r} did not answer one: running the `ansa` subcommand "
@@ -1864,7 +2061,7 @@ def require_ansa_capable(env: dict) -> None:
             f"alone cannot see — the RUNNING DAEMON does, since a session started "
             f"before ANSA landed keeps its old daemon in memory however new the "
             f"file on disk is. Since W4-3b there is no typing fallback: restart the "
-            f"session on a binary built from macmini at or after ANSA landed. "
+            f"session on a rysh binary that has ANSA. "
             f"Nothing has been delivered and no panes were opened.")
 
 
@@ -1902,10 +2099,23 @@ def fleet_send(env: dict, recipient: dict, line: str) -> dict:
     if res.get("ok"):
         return res
 
+    detail = res.get("error") or res.get("output") or ""
+    # a TIMEOUT is not a failure, it is an unknown. The daemon serves queued
+    # requests after their client has gone, so the message may still be typed.
+    # Saying "nothing was delivered" invites the immediate re-send that duplicates
+    # it; the honest answer is to look before resending.
+    if any(m in detail for m in ANSA_PENDING_MARKERS):
+        die(f"{ANSA_PENDING}. Delivery to {recipient['label']} is UNCONFIRMED: "
+            f"ansa={detail!r}.")
+    # a send that says the route itself is missing voids the cached verdict,
+    # so the next process probes again instead of trusting a stale "capable".
+    if any(m in detail for m in ANSA_CAPABILITY_ERRORS):
+        forget_ansa_capable(env)
+
     # There is NO second path any more. A work order that cannot be delivered
     # must not return a receipt -- that failure cost this fleet three orders.
     die(f"DELIVERY FAILED for {recipient['label']}: "
-        f"ansa={res.get('error') or res.get('output')!r}. There is no typing "
+        f"ansa={detail!r}. There is no typing "
         f"fallback since W4-3b; nothing was delivered.")
 
 
@@ -1936,6 +2146,8 @@ def board_send(env: dict, man: dict, sender: dict, recipient: dict, line: str,
     argv = [env["bin"], "board", "send", "--as", as_pane, "--to", recipient["pane"],
             "--board", man["fleet"], "--id", msg_id, "--session", env["session"]]
     if body_file:
+        # workspace-relative (deliver passes ws_rel's form); argv runs
+        # with cwd=workspace, so `rysh board send` resolves it to the same file
         argv += ["--file", body_file]
     argv += ["--", line]
     try:
@@ -2296,6 +2508,24 @@ def spec_count(spec: dict, workers: int) -> int:
     return workers if spec["count"] == "workers" else int(spec["count"])
 
 
+def broadcast_target_roles(man: dict, sender: dict) -> list[str]:
+    """The roles `sender` may broadcast to, from the fleet's TEMPLATE.
+
+    The roles below the sender's own role in the template's chain; every role
+    for the human. Replaces argparse's hard-coded `manager|worker`, the
+    three-tier names, which refused an epic lead's `broadcast fleet-manager`.
+    """
+    specs = template_specs(man.get("template", "three-tier"))
+    if sender.get("role") == "human":
+        return [sp["role"] for sp in specs]
+    below, frontier = [], {sender.get("role")}
+    while frontier:
+        nxt = {sp["role"] for sp in specs if sp["parent"] in frontier} - set(below)
+        below += sorted(nxt)
+        frontier = nxt
+    return below
+
+
 def top_role(man: dict) -> str:
     """The role at the head of the chain — it reports to the human, not upward."""
     for spec in template_specs(man.get("template", "three-tier")):
@@ -2366,7 +2596,7 @@ def require_brief_binary(env: dict) -> None:
     absolutises, or falls back). This closes that gap in the one place where
     refusing is still free.
 
-    E9 Q2 gap B, applied to a second prerequisite: a check that is right but
+    The same rule, applied to a second prerequisite: a check that is right but
     LAST is a standing fleet nobody can reach. By the first board post there is
     a tab, a lane per role, a pane per unit, a worktree each and a brief each —
     and the failure is silent, because a board post that dies with exit 127 is
@@ -2426,7 +2656,7 @@ def op_up(env: dict, args, units: list[dict] | None = None) -> dict:
 
     # ---- the deployment gate, while refusing is still free ----------------
     #
-    # E9 Q2 GAP B. Everything above this line is argument validation; everything
+    # Everything above this line is argument validation; everything
     # below it costs something that has to be undone by hand. ANSA is a hard
     # prerequisite for a fleet — there is no typing fallback since W4-3b — and
     # until now the only thing that checked it was `fleet_send`, so a dead route
@@ -2634,6 +2864,9 @@ def op_up(env: dict, args, units: list[dict] | None = None) -> dict:
     if early_reg.get("errors"):
         state["errors_before_launch"] = early_reg["errors"]
     state["watch"] = apply_watch(env, fleet, args)
+    # Design 055 (the fleet goal executor), merged with R11's truthful state:
+    # the goal goes beside the watch policy in `state`, the R11 record. Dev's
+    # unconditional registry_sync(..., "up") is NOT taken back: R11 replaced it.
     state["goal"] = apply_goal(env, fleet, args)
 
     return {"fleet": fleet, "units": len(units), "panes": total,
@@ -3092,13 +3325,46 @@ def op_commit(env: dict, man: dict, member: dict, message: str) -> dict:
             "file": rel}
 
 
+def manager_tier_roles(man: dict) -> set[str]:
+    """The roles that may build a sub-fleet in this fleet's template: the
+    unit-scoped roles that workers report to. `manager` in three-tier,
+    `fleet-manager` in every epic template; none in duo/portfolio, whose only
+    parent of workers is the head of the chain, which delegates rather than
+    builds (the rule the original check encoded as the literal "manager")."""
+    specs = template_specs(man.get("template", "three-tier"))
+    bosses = {s["parent"] for s in specs if s["role"] == "worker"}
+    return {s["role"] for s in specs if s["scope"] == "unit" and s["role"] in bosses}
+
+
 def op_subfleet(env: dict, man: dict, member: dict, count: int, args) -> dict:
-    """A manager opens its own pane GROUP of extra workers and adopts them."""
-    if member["role"] != "manager":
-        die("only a manager builds a sub-fleet; the CEO delegates to managers")
-    unit = next(u for u in man["units"] if u["manager"]["pane"] == member["pane"])
-    anchor = R.find_pane(R.list_panes(env), unit["workers"][0]["pane"]) \
-        if unit["workers"] else R.find_pane(R.list_panes(env), member["pane"])
+    """A manager-tier member opens its own pane GROUP of extra workers and adopts them.
+
+    TWO fixes. (1) The tier comes from the TEMPLATE (manager_tier_roles),
+    not the literal "manager", which refused every epic template's
+    `fleet-manager`. (2) Since E-42 the roster is `man["members"]`
+    and `man["units"]` holds only unit metadata, so the new workers are appended
+    to `members` with `parent` = the builder; the pre-E-42 shape, with its
+    `units[i].manager/workers`, is still read and written for old manifests.
+    """
+    tier = manager_tier_roles(man)
+    if member.get("role") not in tier:
+        die(f"only a manager-tier member ({', '.join(sorted(tier)) or 'none in this template'}) "
+            f"builds a sub-fleet; {member.get('role')!r} is not one — the head of the chain "
+            f"delegates to its managers, and a worker asks its manager")
+    if "members" in man:
+        unit = unit_meta(man, member.get("unit"))
+        unit = {"unit": unit.get("unit", member.get("unit")),
+                "title": unit.get("title") or member.get("title", ""),
+                "sources": unit.get("sources", [])}
+        mine = [p for p in man["members"]
+                if p.get("role") == "worker" and p.get("parent") == member["pane"]]
+        sink = man["members"]
+    else:  # pre-E-42 manifest
+        unit = next(u for u in man["units"] if u["manager"]["pane"] == member["pane"])
+        mine = unit["workers"]
+        sink = unit["workers"]
+    anchor = R.find_pane(R.list_panes(env), mine[0]["pane"]) \
+        if mine else R.find_pane(R.list_panes(env), member["pane"])
     fresh = new_group_in_lane(env, man["tab"], anchor.get("lane", 1), count)
     taken = {p["name"] for p in R.list_panes(env)}
     added = []
@@ -3113,12 +3379,14 @@ def op_subfleet(env: dict, man: dict, member: dict, count: int, args) -> dict:
             args.agent_args = man["agent_args"]
     agent, launch_args = agent_args_for(args)
     base = slug(unit["title"])
-    for i, pane in enumerate(fresh, len(unit["workers"]) + 1):
+    for i, pane in enumerate(fresh, len(mine) + 1):
         w = {"role": "worker", "unit": unit["unit"], "pane": pane["id"],
              "label": unique(taken, f"wkr-{unit['unit']}-{base}-{i}"),
              "roadmap": os.path.join(man["roadmap_dir"], "workers",
                                      f"unit-{unit['unit']}-w{i}.md"),
              "parent": member["pane"], "title": unit["title"]}
+        if "members" in man:
+            w["sources"] = unit.get("sources", [])
         rename(env, w["pane"], w["label"])
         for k, v in ((META_FLEET, man["fleet"]), (META_ROLE, "worker"),
                      (META_UNIT, unit["unit"]), (META_LABEL, w["label"]),
@@ -3129,7 +3397,7 @@ def op_subfleet(env: dict, man: dict, member: dict, count: int, args) -> dict:
         if args.worktrees:
             wt = make_worktree(env, f"{man['fleet']}-{w['label']}", args.base_branch)
             w["worktree"] = wt.get("path")
-        unit["workers"].append(w)
+        sink.append(w)
         prompt = build_brief(env, man, w, args)
         set_meta(env, w["pane"], META_COMM, fleet_comm(man))
         if fleet_comm(man) == COMM_QUEUE:
@@ -3477,7 +3745,9 @@ def main() -> None:
     p.add_argument("--kind", default="UPDATE")
 
     p = sub.add_parser("broadcast", help="one message to every member of a role")
-    p.add_argument("role", choices=["manager", "worker"])
+    # Any role name: the valid ones depend on the fleet's TEMPLATE, which argparse
+    # cannot see. Checked in broadcast_target_roles once the fleet is read.
+    p.add_argument("role", help="a role below you in this fleet's template (e.g. fleet-manager, worker)")
     p.add_argument("body", nargs="?", default="")
     p.add_argument("--text", help="message body (use when options precede it)")
     p.add_argument("--file")
@@ -3639,16 +3909,28 @@ def main() -> None:
         if args.cmd == "report":
             return out(deliver(env, man, sender, parent_of(man, sender),
                                args.body, args.kind, body_file))
-        targets = [p for p in roster(man) if p["role"] == args.role
+        role = ROLE_ALIASES.get(args.role, args.role)
+        allowed = broadcast_target_roles(man, sender)
+        if role not in allowed:
+            die(f"cannot broadcast to {args.role!r} as {sender['role']} {sender['label']}: "
+                f"in template {man.get('template', 'three-tier')!r} the roles below you are "
+                f"{', '.join(allowed) or 'none'}")
+        targets = [p for p in roster(man) if p["role"] == role
                    and (sender["role"] in ("ceo", "human")
                         or p["parent"] == sender["pane"])]
+        if not targets:
+            # Zero deliveries used to print `[]` and exit 0, which reads as sent.
+            direct = sorted({p["role"] for p in children_of(man, sender)}) if sender.get("pane") else []
+            die(f"no {role} reports to {sender['label']} directly, so nothing was sent; "
+                f"messages go down your own chain — broadcast to "
+                f"{', '.join(direct) or 'your direct reports'} instead")
         return out([deliver(env, man, sender, t, args.body, args.kind, body_file)
                     for t in targets])
     if args.cmd == "status" and not args.who:
         return out(registry(env, "status", man["fleet"]))
     if args.cmd in ("status", "screen", "result", "wait"):
         who = resolve(man, args.who)
-        pane = R.find_pane(R.list_panes(env), who["pane"])
+        pane = target_pane(env, who["pane"])   # one listing, not a session walk
         if args.cmd == "screen":
             scr = R.vt_screen(env, who["pane"])
             return out("\n".join(R.visible_solid(x) for x in scr.get("lines", [])))
@@ -3676,7 +3958,7 @@ def main() -> None:
         res = []
         for ref in args.who:
             w = resolve(man, ref)
-            pane = R.find_pane(R.list_panes(env), w["pane"])
+            pane = target_pane(env, w["pane"])   # one listing, not a session walk
             r = R.op_wait(env, pane, args.timeout, settle=3)
             r["answer"] = R.clip(r.get("answer"), args.max_chars)
             res.append({"label": w["label"], "role": w["role"], **r})

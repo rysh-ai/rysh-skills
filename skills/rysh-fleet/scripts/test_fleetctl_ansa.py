@@ -51,7 +51,7 @@ def _stub_ryshfan():
     m.self_pane = lambda panes: {"id": "pane-anchor", "name": "me", "tab": "tab-1"}
     m.active_pane = lambda panes: {"id": "pane-anchor", "name": "me", "tab": "tab-1"}
     # NOT installed in sys.modules here: fleetctl_testing loads fleetctl against it
-    # under a private name and puts sys.modules back (ORDER-7c test isolation).
+    # under a private name and puts sys.modules back.
     return m
 
 
@@ -67,7 +67,7 @@ RCPT = {"role": "worker", "unit": "01", "pane": "pane-recipient", "label": "wkr-
 
 
 class Delivery(unittest.TestCase):
-    """W4-3b: ANSA is the only path. The property is unchanged and now harder to
+    """ANSA is the only path. The property is unchanged and now harder to
     hold, because there is no second path to catch a mistake: A WORK ORDER NEVER
     VANISHES. It is delivered, or the caller is told loudly. Never a receipt
     without a delivery."""
@@ -126,7 +126,7 @@ class Delivery(unittest.TestCase):
     def test_an_old_binary_is_REFUSED_with_a_message_naming_the_cause(self):
         """The deployment prerequisite that stopped the live cutover.
 
-        `macmini` had ANSA merged while the running sidecar predated it, so every
+        A branch had ANSA merged while the running sidecar predated it, so every
         message quietly took the fallback. With no fallback left, deploying onto
         such a binary must fail ONCE, clearly, naming the binary -- not produce a
         router error per message that the reader has to diagnose from a dead
@@ -163,7 +163,7 @@ class Delivery(unittest.TestCase):
         `not capable` would pass every refusal test above while making delivery
         impossible.
 
-        AMENDED FOR E9 Q2. This test used to hand the probe local usage text —
+        AMENDED. This test used to hand the probe local usage text —
         `usage: rysh ansa send <target> -- <text>` — and assert capable. That
         made it the test that certified GAP A: it asserted that a binary whose
         own --help mentions `ansa` is a working deployment, which is precisely
@@ -190,7 +190,7 @@ class Delivery(unittest.TestCase):
 
 
 class StaleDaemon(unittest.TestCase):
-    """E9 Q2. The check EXISTED and measured the wrong thing.
+    """The check EXISTED and measured the wrong thing.
 
     Q2 was filed as "a stale sidecar silently changes behaviour and nothing
     warns". Half of that is false — `ansa_capable`/`require_ansa_capable` have
@@ -300,7 +300,7 @@ class StaleDaemon(unittest.TestCase):
             fleet="q2probe", limit=None, force=False, replace=True,
             template="three-tier", workers=1, dry_run=False,
             roadmap_dir="new_roadmap/fleets/q2probe", new_tab=True,
-            ceo_here=False, worktrees=True, base_branch="macmini",
+            ceo_here=False, worktrees=True, base_branch="dev",
             source="test")
         units = [{"unit": "01", "title": "unit one", "sources": []}]
 

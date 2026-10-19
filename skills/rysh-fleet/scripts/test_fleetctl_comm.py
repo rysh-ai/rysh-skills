@@ -36,6 +36,8 @@ def _install_ryshfan_stub():
     m.is_busy = lambda lines: False
     m.has_composer = lambda lines: True
     m.CLEAN_ENV = "env -u CLAUDECODE"
+    # fleetctl types R.clean_env(env, kind); the stub keeps its old prefix
+    m.clean_env = lambda env=None, kind="claude": m.CLEAN_ENV
     import re
     m.SESSION_ID_ARG = re.compile(r"--session-id[= ]([0-9a-fA-F-]{36})")
 
@@ -46,7 +48,7 @@ def _install_ryshfan_stub():
     m.fanout_dir = lambda env: env["fanout"]
     m.session_record = lambda workspace, session: {}
     # NOT installed in sys.modules here: fleetctl_testing loads fleetctl against it
-    # under a private name and puts sys.modules back (ORDER-7c test isolation).
+    # under a private name and puts sys.modules back.
     return m
 
 
@@ -128,7 +130,10 @@ class PollingStreamGoesThroughTheBoard(_Base):
             fh.write("long order")
         fleetctl.deliver(env, man, SENDER, RECIPIENT, "", "WORK ORDER", body)
         argv = self.board_sends()[0]
-        self.assertEqual(argv[argv.index("--file") + 1], body)
+        # workspace-relative; `board send` runs with
+        # cwd=workspace, so it opens the same file
+        self.assertEqual(argv[argv.index("--file") + 1], "order.md")
+        self.assertTrue(os.path.samefile(os.path.join(env["workspace"], "order.md"), body))
 
     def test_a_refused_send_dies_and_logs_nothing(self):
         env, man = make_env(self.tmp, "polling-stream")

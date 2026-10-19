@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FLEETCTL = os.path.join(HERE, "fleetctl.py")
 
 
-# ORDER-7c: HERMETIC. fleetctl's main() resolves the session (ryshfan.discover)
+# HERMETIC. fleetctl's main() resolves the session (ryshfan.discover)
 # BEFORE it validates --file, and discover reads the daemons running on this
 # machine: with two or more running and no RYSH_SESSION it refuses, so these
 # tests passed or failed depending on what other agents had started (e.g. a

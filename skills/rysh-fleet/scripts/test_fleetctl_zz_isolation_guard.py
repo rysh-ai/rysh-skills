@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guard (E9 ORDER-7c): no fleetctl test module may leave the process dirty.
+"""Guard: no fleetctl test module may leave the process dirty.
 
 Three modules used to plant a stub `ryshfan` in sys.modules and import
 `fleetctl` bound to it, and one left the global `subprocess.run` patched. The

@@ -57,6 +57,17 @@ whitespace and re-joined with single spaces; runs of spaces collapse and newline
 cannot survive it at all. The envelope always travels inline so the recipient can
 see who is talking without opening anything.
 
+**One typed line, at most 350 characters including the envelope.** An
+inline body that would make the line longer is written for you, verbatim, to
+`<your worktree>/out/msgs/msg-NNNN.md` (without a worktree:
+`<workspace>/worktrees/.<fleet>-msgs/msg-NNNN.md`), and the recipient is typed
+`<envelope> Read <path> in full.`, the path relative to the workspace root
+(a body file outside the workspace is refused). Longer typed lines are taken as a paste
+by the recipient's claude and can arrive truncated. The envelope names the fleet,
+the kind, sender and recipient (role, label, 8-character pane ids) and the message
+id; it does **not** carry your worktree path, so every path you cite must be
+absolute (below).
+
 **Up — a report.** Two channels, and they are not interchangeable:
 
 1. **Your final message in your pane IS your answer.** Your parent collects it

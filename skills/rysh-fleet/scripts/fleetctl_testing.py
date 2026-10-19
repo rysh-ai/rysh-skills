@@ -1,4 +1,4 @@
-"""Test-only helper (E9 ORDER-7c): load fleetctl against a STUB ryshfan without
+"""Test-only helper: load fleetctl against a STUB ryshfan without
 leaking either module into the rest of the test process.
 
 fleetctl does `import ryshfan as R` at module scope, so a test that wants a

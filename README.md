@@ -103,8 +103,8 @@ regardless of its own working directory.
   session and which pane they are. rysh state is project-local, so the working directory
   matters too; the helpers resolve it for you.
 - Python 3 (stdlib only).
-- A daemon from **2026-08-05** or later for `$RYSH_PANE` self-identification. Older
-  daemons still work, with the caveats each `SKILL.md` spells out.
+- **rysh v0.2.11 or later.** The fleet status ledger, `rysh fleet watch`, the goal
+  executor and `rysh peer` are not in earlier releases.
 
 The child sessions that `rysh-fanout` and `rysh-fleet` launch today are `claude`
 sessions. The skills themselves are agent-agnostic — Claude Code and Codex both read

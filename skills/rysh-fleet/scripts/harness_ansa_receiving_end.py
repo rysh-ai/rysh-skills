@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E9 / Q1: prove ANSA delivery at the RECEIVING end, against a live daemon.
+"""Prove ANSA delivery at the RECEIVING end, against a live daemon.
 
     python3 scripts/harness_ansa_receiving_end.py --session <name> --pane <pane-id>
 
@@ -46,8 +46,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--session", required=True)
     ap.add_argument("--pane", required=True, help="a SCRATCH pane you own")
-    ap.add_argument("--bin", default=os.path.abspath(os.path.join(
-        HERE, "..", "..", "..", "..", "rysh-cli-app", "sidecar", "rysh-darwin-arm64")))
+    ap.add_argument("--bin", default=os.environ.get("RYSH_BIN") or "rysh",
+                    help="the rysh binary (default: $RYSH_BIN, else `rysh` on PATH)")
     ap.add_argument("--settle", type=float, default=2.0)
     args = ap.parse_args()
 
@@ -61,11 +61,11 @@ def main() -> int:
     # A nonce, so a hit cannot be scrollback from an earlier run. This is the
     # whole reason the assertion is trustworthy: the string did not exist
     # anywhere in the world until this line ran.
-    nonce = f"E9-Q1-{uuid.uuid4().hex[:12]}"
+    nonce = f"ANSA-PROBE-{uuid.uuid4().hex[:12]}"
     # Self-describing, because the only panes that can witness a delivery are
     # panes running an agent -- so this line WILL be read by one. It says what it
     # is, so a recipient does not act on a probe.
-    line = (f"E9-Q1 ANSA receiving-end probe {nonce} "
+    line = (f"ANSA receiving-end probe {nonce} "
             f"-- test artifact, no action required, do not reply")
 
     # A pane with no live terminal returns an EMPTY VT snapshot, and an empty
@@ -92,7 +92,7 @@ def main() -> int:
     # the query, or an `in` test against the wrong buffer, would make the final
     # assertion pass no matter what. This nonce is never sent, so it must never
     # be found.
-    never_sent = f"E9-Q1-NEVERSENT-{uuid.uuid4().hex[:12]}"
+    never_sent = f"ANSA-PROBE-NEVERSENT-{uuid.uuid4().hex[:12]}"
 
     fleetctl._ansa_capable = None            # force a real capability probe
     out = fleetctl.fleet_send(env, rcpt, line)   # the REAL delivery path

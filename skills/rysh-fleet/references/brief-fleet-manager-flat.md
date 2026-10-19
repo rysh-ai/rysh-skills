@@ -66,10 +66,10 @@ its priorities — the roadmap lead does.
    cannot touch the same file. If they must, serialise them. Two agents editing
    one file is not a merge conflict here — it is silent loss.
 
-If your epic touches `rysh-server` migrations, migration numbers are handed out
-**centrally by epic E6 at the moment work starts** (`ls migrations/*.up.sql | tail -1`),
-never reserved in advance. Two epics reserved `000049` and `000050` a day early
-and both were taken within 24 hours.
+If your epic touches numbered database migrations, migration numbers are handed out
+**centrally by one owner at the moment work starts** (`ls migrations/*.up.sql | tail -1`),
+never reserved in advance: numbers reserved a day early by two epics were both
+taken by others within 24 hours.
 
 ## Reporting
 

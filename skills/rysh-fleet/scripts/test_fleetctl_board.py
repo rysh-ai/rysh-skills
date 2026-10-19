@@ -58,7 +58,7 @@ def _install_ryshfan_stub():
     m.is_busy = lambda lines: False
     m.has_composer = lambda lines: True
     # NOT installed in sys.modules here: fleetctl_testing loads fleetctl against it
-    # under a private name and puts sys.modules back (ORDER-7c test isolation).
+    # under a private name and puts sys.modules back.
     return m
 
 
@@ -248,7 +248,7 @@ class MirrorShape(unittest.TestCase):
         joined = " ".join(self.ran[0][0])
         self.assertIn(SENDER["pane"], joined)
         # The op_send half of this assertion is gone with the typing path
-        # (W4-3b). What it was really pinning survives: the MIRROR carries the
+        #. What it was really pinning survives: the MIRROR carries the
         # full uuid, not the envelope's 8-char short form.
         self.assertNotIn("pane-sen ", joined)
 
@@ -274,10 +274,14 @@ class MirrorShape(unittest.TestCase):
         self.assertTrue(res["submitted"])
 
     def test_body_file_is_referenced_when_there_is_no_inline_body(self):
-        fleetctl.deliver(self.env, self.man, SENDER, RECIPIENT, "", "WORK ORDER",
-                         "/tmp/order.md")
+        # the body lives under the workspace and the
+        # mirror references it RELATIVE to the workspace root, never absolute
+        body = os.path.join(self.env["workspace"], "order.md")
+        fleetctl.deliver(self.env, self.man, SENDER, RECIPIENT, "", "WORK ORDER", body)
         joined = " ".join(self.ran[0][0])
-        self.assertIn("/tmp/order.md", joined)
+        self.assertIn("order.md", joined)
+        self.assertNotIn(os.path.realpath(self.env["workspace"]), joined)
+        self.assertNotIn(self.env["workspace"], joined)
 
     def test_explicit_zero_disables_the_mirror(self):
         os.environ["RYSH_FLEET_BOARD"] = "0"

@@ -334,6 +334,11 @@ forging the CEO as the source of its own orders.
 `msg` refuses to skip the chain: a manager cannot message another manager's
 worker. Use `report` to go up, `msg` to go down.
 
+A typed line is at most **350 characters including the envelope**:
+a longer inline body is written to `<sender worktree>/out/msgs/msg-NNNN.md` (or
+`worktrees/.<fleet>-msgs/`) and the recipient gets `<envelope> Read <path> in full.`, the path relative to the
+workspace root. A body file outside the workspace is refused.
+
 ---
 
 ## The envelope — why every message names its sender

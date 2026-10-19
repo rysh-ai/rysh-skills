@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E9 / Q1: `via` must never name a path that could not have carried the message.
+"""`via` must never name a path that could not have carried the message.
 
 Run (from the rysh-fleet skill directory): python3 scripts/test_fleetctl_via_audit.py
 
@@ -52,7 +52,7 @@ def _install_ryshfan_stub():
     m.is_busy = lambda lines: False
     m.has_composer = lambda lines: True
     # NOT installed in sys.modules here: fleetctl_testing loads fleetctl against it
-    # under a private name and puts sys.modules back (ORDER-7c test isolation).
+    # under a private name and puts sys.modules back.
     return m
 
 

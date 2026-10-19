@@ -394,14 +394,17 @@ class TestPathsAreUnambiguous(unittest.TestCase):
         # future editor deletes as noise.
         self.assertIn("one file *per agent*", text)
 
-    def test_the_envelope_names_the_senders_worktree(self):
+    def test_the_envelope_no_longer_carries_the_worktree(self):
+        # the worktree path made the envelope too long for one
+        # typed line; F-33 is served by ABSOLUTE paths (briefs) and by the
+        # absolute pointer into the sender's tree (test_fleetctl_ansa_relief).
         man = {"fleet": "f"}
         sender = {"role": "worker", "label": "wkr-01", "unit": "01",
                   "pane": "aaaaaaaa-1111", "worktree": "/repo/worktrees/f-wkr-01"}
         recipient = {"role": "manager", "label": "mgr-01", "pane": "bbbbbbbb-2222"}
         line = F.envelope_line(man, sender, recipient, "REPORT", "msg-0001")
-        self.assertIn("/repo/worktrees/f-wkr-01", line,
-                      "the recipient cannot resolve a relative path without it")
+        self.assertNotIn("/repo/worktrees/f-wkr-01", line)
+        self.assertIn("FROM worker wkr-01 (unit 01, pane aaaaaaaa)", line)
 
     def test_no_worktree_means_no_empty_field(self):
         # A blank where a path belongs reads as "the workspace", which is the
@@ -481,7 +484,7 @@ class TestBriefNamesARunnableBinary(unittest.TestCase):
                          "no-such-rysh-binary")
 
     def test_up_refuses_an_unrunnable_brief_binary_BEFORE_the_first_pane(self):
-        """E9 Q2 gap B, applied to the binary the BRIEFS name.
+        """The deployment gate, applied to the binary the BRIEFS name.
 
         `require_ansa_capable` proves `env["bin"]` runs; it does not prove that
         what agent_bin writes into every brief runs, and they may differ. A
