@@ -136,7 +136,7 @@ def run_main(*argv) -> object:
     return json.loads(buf.getvalue())
 
 
-class F8PollWithoutWalkingEveryTab(unittest.TestCase):
+class PollWithoutWalkingEveryTab(unittest.TestCase):
     """One poll of collect/wait costs at most 2 daemon calls: one listing of the
     TARGET's own tab (it carries the pane meta op_wait reads) and one screen."""
 
@@ -183,7 +183,7 @@ class F8PollWithoutWalkingEveryTab(unittest.TestCase):
         self.assertEqual(res[0]["state"], "idle", res)
 
 
-class F8IdleDetectionIsUnchanged(unittest.TestCase):
+class IdleDetectionIsUnchanged(unittest.TestCase):
     """The same screens give the same verdicts: op_wait itself is not touched,
     and this table pins what it returns through both commands."""
 
@@ -270,7 +270,7 @@ def fresh_process():
     F._ansa_probe_detail = ""
 
 
-class F5OneProbePerSession(unittest.TestCase):
+class OneProbePerSession(unittest.TestCase):
     """Every fleetctl send used to probe first — a second full `ansa send` in the
     one queue. The verdict is cached on disk per session and daemon identity."""
 
@@ -374,9 +374,9 @@ def deliver_env(sender_worktree):
     return tmp, {"workspace": ws, "session": "s", "bin": "rysh"}, man, lead, wkr
 
 
-class F6LongBodiesTravelAsAFile(unittest.TestCase):
+class LongBodiesTravelAsAFile(unittest.TestCase):
     """A typed line over ANSA_LINE_MAX (350) hits claude's paste
-    handling and the confirm loop (7b: the tail-kept truncation, the 12–28 s
+    handling and the confirm loop (the tail-kept truncation, the 12–28 s
     holds). The body goes in a file and the typed line is the envelope plus a
     pointer, WORKSPACE-RELATIVE."""
 
@@ -522,10 +522,10 @@ class OnePointerLineWithinTheCeiling(unittest.TestCase):
         self.assertIsNone(probe["body_file"])
 
 
-class F7TimeoutsAreAboveTheCLIAndSayPending(unittest.TestCase):
+class TimeoutsAreAboveTheCLIAndSayPending(unittest.TestCase):
     """fleetctl killed `rysh ansa send` at 20 s (probe 15 s) while the CLI's own
-    budget is 30 s and the daemon still delivers queued requests (7b: msg-0056
-    arrived 2 s after "nothing was delivered")."""
+    budget is 30 s and the daemon still delivers queued requests (a message
+    once arrived 2 s after "nothing was delivered")."""
 
     def setUp(self):
         fresh_process()
