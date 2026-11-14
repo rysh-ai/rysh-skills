@@ -948,6 +948,18 @@ def op_spawn(env: dict, count: int, anchor_ref: str | None, force: bool = False)
 SESSION_ID_ARG = re.compile(r"--session-id[= ]([0-9a-fA-F-]{36})")
 
 
+FULL_AUTO_ARGS = "--dangerously-skip-permissions"
+
+
+def start_claude_args(claude_args: str, full_auto: bool) -> str:
+    """A child's launch args. The default is NO flag: the child runs in the user's
+    own permission mode. `--full-auto` adds the bypass flag, once (SK-1)."""
+    args = (claude_args or "").strip()
+    if full_auto and FULL_AUTO_ARGS not in args.split():
+        args = f"{args} {FULL_AUTO_ARGS}".strip()
+    return args
+
+
 def op_start(env: dict, pane: dict, prompt: str, claude_args: str, panes: list[dict] | None = None) -> dict:
     """Launch claude in the pane with the prompt already supplied as argv.
 
@@ -1155,7 +1167,11 @@ def main() -> None:
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--prompt")
     g.add_argument("--prompt-file")
-    p.add_argument("--claude-args", default="--dangerously-skip-permissions")
+    p.add_argument("--claude-args", default="",
+                   help="extra claude launch args (default: none, the user's own permission mode)")
+    p.add_argument("--full-auto", action="store_true",
+                   help="start the child with --dangerously-skip-permissions (its permission checks "
+                        "OFF). Only when the user asked for it for this child")
 
     p = sub.add_parser("send")
     p.add_argument("pane")
@@ -1248,7 +1264,8 @@ def main() -> None:
         if args.prompt_file:
             with open(args.prompt_file) as fh:
                 prompt = fh.read()
-        print(json.dumps({"pane": pane, **op_start(env, pane, prompt, args.claude_args, panes)}, indent=2))
+        claude_args = start_claude_args(args.claude_args, args.full_auto)
+        print(json.dumps({"pane": pane, **op_start(env, pane, prompt, claude_args, panes)}, indent=2))
     elif args.cmd == "send":
         print(json.dumps(op_send(env, pane, args.text), indent=2))
     elif args.cmd == "screen":

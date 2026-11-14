@@ -446,7 +446,7 @@ def launch_roster(env: dict, man: dict, args, agent: str, launch_args: str) -> l
             prompt = build_brief(env, man, p, args)
             res = start_agent(env, R.find_pane(R.list_panes(env), p["pane"]),
                               prompt, p.get("worktree"), launch_args, agent, man["fleet"],
-                              comm=fleet_comm(man))
+                              comm=fleet_comm(man), full_auto=bool(man.get("full_auto")))
             p["session_id"] = res["session_id"]
             stamp_launch(env, p["pane"], res, agent, res.get("launch_args", launch_args),
                          task=p["label"])
@@ -857,15 +857,18 @@ def clear_meta(env: dict, pane_id: str, key: str) -> None:
 # this side stamps `fleet.agent` so that code knows which branch to take.
 # --------------------------------------------------------------------------
 
+# The DEFAULT launch is the user's own permission mode: no bypass flag, and a rysh
+# agent's approvals are not armed. `--full-auto` is the one way to turn the bypass
+# on (`full_auto_args`), for that launch, and only when the user asked for it.
 AGENTS = {
     # claude: the session id is pinned at launch, so resume needs no lookup.
-    "claude": {"default_args": "--dangerously-skip-permissions",
+    "claude": {"default_args": "", "full_auto_args": "--dangerously-skip-permissions",
                "pins_session_id": True, "native": False},
     # codex: NO launch-time id pin — codex chooses its own id and only records it
     # on disk afterwards. Resume keys off the working directory instead
     # (`codex resume --last` is cwd-filtered), which is why a codex fleet wants
     # `--worktrees`: see the collision warning in codex_trust/op_up.
-    "codex": {"default_args": "--dangerously-bypass-approvals-and-sandbox",
+    "codex": {"default_args": "", "full_auto_args": "--dangerously-bypass-approvals-and-sandbox",
               "pins_session_id": False, "native": False},
     # rysh: no process, no flags, no id. The brief is delivered as a prompt and
     # the pane's own agent runs it — with rysh's full tool set (bash, file_read,
@@ -873,8 +876,13 @@ AGENTS = {
     # work as a claude one. There are no launch args because there is no command
     # line to put them on; permission mode is the pane's policy and its approval
     # settings, which is a different mechanism, not a missing one.
-    "rysh": {"default_args": "", "pins_session_id": False, "native": True},
+    "rysh": {"default_args": "", "full_auto_args": "", "pins_session_id": False, "native": True},
 }
+
+FULL_AUTO_HELP = ("launch every agent with its permission checks OFF (claude "
+                  "--dangerously-skip-permissions, codex --dangerously-bypass-approvals-and-sandbox, "
+                  "rysh auto-approve). Only when the user asked for it for this launch; the "
+                  "default is the user's own permission mode")
 
 META_AGENT = "fleet.agent"        # which agent this pane runs: claude|codex|rysh
 META_AGENT_ARGS = "agent.args"    # its launch args, so resume restores the mode
@@ -965,7 +973,7 @@ def codex_untrust(fleet: str) -> list[str]:
 
 
 def start_native_agent(env: dict, pane: dict, prompt: str, cwd: str | None,
-                       path: str) -> dict:
+                       path: str, full_auto: bool = False) -> dict:
     """Give the pane's OWN agent its brief. Nothing is spawned.
 
     Two steps, and the order matters:
@@ -984,11 +992,11 @@ def start_native_agent(env: dict, pane: dict, prompt: str, cwd: str | None,
     routing decision, so this is that path minus the line-oriented parser — the
     whole brief arrives verbatim, exactly as argv delivers it to a claude.
 
-    AND THE APPROVALS ARE ARMED FIRST, WHICH IS NOT OPTIONAL AND IS ORDERED.
-    A rysh agent's tool calls are gated by default: left alone, every agent in
-    the fleet stops at its first `bash` on `[y]es [Y]es always [n]o` and waits
-    for a human who is not coming — the whole fleet reads as booted and does
-    nothing. `MsgSetRunBudget{auto_approve}` is the native equivalent of
+    WITH `--full-auto` THE APPROVALS ARE ARMED FIRST, AND THAT IS ORDERED.
+    Without it the pane keeps its own approval settings: the agent stops at its
+    first gated tool call on `[y]es [Y]es always [n]o` for the user to answer —
+    the user's own permission mode, which is the default (SK-1).
+    `MsgSetRunBudget{auto_approve}` is the native equivalent of
     `--dangerously-skip-permissions`, and it must land BEFORE the prompt: the
     flag is copied onto each orchestrator when the LEG SPAWNS, so arming a run
     that is already in flight changes nothing (verified live 2026-08-12 — three
@@ -1006,16 +1014,17 @@ def start_native_agent(env: dict, pane: dict, prompt: str, cwd: str | None,
         # and its second work order stalled gated. An older daemon that does
         # not know the field ignores it and keeps the old one-turn behaviour —
         # the ANSA per-prompt re-arm still covers that binary.
-        nc.publish(f"{env['session']}.pane.{pane['id']}.llm_prompt_execution.inbox",
-                   R.envelope("MsgSetRunBudget",
-                              {"auto_continue": False, "auto_approve": True,
-                               "auto_approve_persist": True}))
+        if full_auto:
+            nc.publish(f"{env['session']}.pane.{pane['id']}.llm_prompt_execution.inbox",
+                       R.envelope("MsgSetRunBudget",
+                                  {"auto_continue": False, "auto_approve": True,
+                                   "auto_approve_persist": True}))
         nc.publish(f"{env['session']}.pane.{pane['id']}.inbox",
                    R.envelope("MsgPaneExecPrompt", {"prompt": prompt}))
     finally:
         nc.close()
     return {"session_id": "", "prompt_file": path, "agent": "rysh",
-            "auto_approve": True,
+            "auto_approve": bool(full_auto),
             "output": "brief delivered as a prompt (no process)"}
 
 
@@ -1371,7 +1380,7 @@ def comm_section(env: dict, man: dict, p: dict) -> str:
 
 def start_agent(env: dict, pane: dict, prompt: str, cwd: str | None,
                 agent_args: str, agent: str = "claude", fleet: str = "",
-                comm: str = COMM_INPUT) -> dict:
+                comm: str = COMM_INPUT, full_auto: bool = False) -> dict:
     """Start one agent on its brief.
 
     For a CLI agent this launches a process with the prompt as argv — argv, not
@@ -1398,7 +1407,7 @@ def start_agent(env: dict, pane: dict, prompt: str, cwd: str | None,
     cd = f"cd {cwd} && " if cwd else ""
 
     if is_native(agent):
-        return start_native_agent(env, pane, prompt, cwd, path)
+        return start_native_agent(env, pane, prompt, cwd, path, full_auto=full_auto)
 
     if agent == "codex":
         # No id to pin, and the trust gate to clear first — for the cwd the agent
@@ -1449,12 +1458,12 @@ def agent_args_for(args) -> tuple[str, str]:
 
     `--claude-args` predates `--agent` and stays working as the override it
     always was; `--agent-args` is the neutral spelling. Whichever the caller
-    passed wins over the agent's default — and if they passed neither, the
-    DEFAULT IS PER AGENT, because codex's full-auto flag is not claude's
+    passed wins over the agent's default, which is NO flag: the agent runs in
+    the user's own permission mode. `--full-auto` adds the agent's own bypass
+    flag, once, because codex's full-auto flag is not claude's
     (`--dangerously-bypass-approvals-and-sandbox`, not
-    `--dangerously-skip-permissions`). Handing codex claude's flag is an
-    immediate hard error at the pane; handing it nothing is the approval prompt
-    that hangs a fleet agent forever.
+    `--dangerously-skip-permissions`); handing codex claude's flag is an
+    immediate hard error at the pane.
     """
     agent = getattr(args, "agent", "claude") or "claude"
     if agent not in AGENTS:
@@ -1474,7 +1483,23 @@ def agent_args_for(args) -> tuple[str, str]:
                 f"process and has no command line. Its permissions come from the pane's policy "
                 f"and approval settings.")
         return agent, ""
-    return agent, explicit or AGENTS[agent]["default_args"]
+    launch = explicit or AGENTS[agent]["default_args"]
+    bypass = AGENTS[agent]["full_auto_args"]
+    if getattr(args, "full_auto", False) and bypass not in launch.split():
+        launch = f"{launch} {bypass}".strip()
+    return agent, launch
+
+
+def inherit_fleet_agent(args, man: dict) -> None:
+    """A sub-fleet INHERITS its fleet's agent, launch args and full-auto choice
+    unless the manager names another agent (then it inherits nothing)."""
+    if getattr(args, "agent", ""):
+        return
+    args.agent = man.get("agent", "claude")
+    if not getattr(args, "agent_args", "") and man.get("agent_args"):
+        args.agent_args = man["agent_args"]
+    if man.get("full_auto"):
+        args.full_auto = True
 
 
 def stamp_launch(env: dict, pane_id: str, res: dict, agent: str,
@@ -2846,6 +2871,7 @@ def op_up(env: dict, args, units: list[dict] | None = None) -> dict:
     agent, launch_args = agent_args_for(args)
     man["agent"] = agent
     man["agent_args"] = launch_args
+    man["full_auto"] = bool(getattr(args, "full_auto", False))
     launched = launch_roster(env, man, args, agent, launch_args)
 
     # queue messaging (dev, design 051): every agent gets its own listener on the board.
@@ -3373,10 +3399,7 @@ def op_subfleet(env: dict, man: dict, member: dict, count: int, args) -> dict:
     # fleet that had to remember to re-type `--agent codex` would eventually
     # open a claude among the codexes, and mixed-agent fleets are out of scope
     # (§7.3) precisely because nothing downstream expects one.
-    if not getattr(args, "agent", ""):
-        args.agent = man.get("agent", "claude")
-        if not getattr(args, "agent_args", "") and man.get("agent_args"):
-            args.agent_args = man["agent_args"]
+    inherit_fleet_agent(args, man)
     agent, launch_args = agent_args_for(args)
     base = slug(unit["title"])
     for i, pane in enumerate(fresh, len(mine) + 1):
@@ -3404,7 +3427,7 @@ def op_subfleet(env: dict, man: dict, member: dict, count: int, args) -> dict:
             start_listener(env, man, w["pane"])
         res = start_agent(env, R.find_pane(R.list_panes(env), w["pane"]),
                           prompt, w.get("worktree"), launch_args, agent, man["fleet"],
-                          comm=fleet_comm(man))
+                          comm=fleet_comm(man), full_auto=bool(getattr(args, "full_auto", False)))
         w["session_id"] = res["session_id"]
         # Same stamp as the main roster, through the same function: a
         # kill/resume that only worked for the top three tiers is a trap.
@@ -3550,11 +3573,11 @@ def add_build_args(p):
                         "(rysh's own in-daemon agent — no subprocess). One per "
                         "fleet; a mixed fleet is not supported")
     p.add_argument("--agent-args", default="",
-                   help="launch args for the agent CLI; defaults per agent "
-                        "(claude --dangerously-skip-permissions, "
-                        "codex --dangerously-bypass-approvals-and-sandbox)")
-    p.add_argument("--claude-args", default="--dangerously-skip-permissions",
+                   help="launch args for the agent CLI (default: none, the user's own "
+                        "permission mode)")
+    p.add_argument("--claude-args", default="",
                    help="the old spelling of --agent-args; still an override")
+    p.add_argument("--full-auto", action="store_true", help=FULL_AUTO_HELP)
     p.add_argument("--force", action="store_true", help="ignore a spent token ceiling")
     p.add_argument("--comm", choices=COMMS, default=DEFAULT_COMM,
                    help="how agents message each other (designs 050/051). queue (default): "
@@ -3668,7 +3691,8 @@ def main() -> None:
     e.add_argument("--ceo-here", action="store_true")
     e.add_argument("--agent", default="claude", choices=sorted(AGENTS))
     e.add_argument("--agent-args", default="")
-    e.add_argument("--claude-args", default="--dangerously-skip-permissions")
+    e.add_argument("--claude-args", default="")
+    e.add_argument("--full-auto", action="store_true", help=FULL_AUTO_HELP)
     e.add_argument("--force", action="store_true")
     e.add_argument("--dry-run", action="store_true")
     e.add_argument("--source", default="")
@@ -3681,9 +3705,9 @@ def main() -> None:
     for a in ("--pattern", "--split-on", "--roadmap-dir", "--base-branch",
               "--claude-args", "--agent-args", "--mission", "--source"):
         pr.add_argument(a, default={"--pattern": "*.md", "--roadmap-dir": "new_roadmap/fleet",
-                                    "--base-branch": "dev",
-                                    "--claude-args": "--dangerously-skip-permissions"}.get(a, ""))
+                                    "--base-branch": "dev"}.get(a, ""))
     pr.add_argument("--agent", default="claude", choices=sorted(AGENTS))
+    pr.add_argument("--full-auto", action="store_true", help=FULL_AUTO_HELP)
     pr.add_argument("--from", dest="source", default="")
     pr.add_argument("--template", default="epic", choices=sorted(TEMPLATES))
     pr.add_argument("--workers", type=int, default=1)
@@ -3789,7 +3813,9 @@ def main() -> None:
     # so a manager in a codex fleet opens codex workers without re-typing it.
     q.add_argument("--agent", default="", choices=[""] + sorted(AGENTS))
     q.add_argument("--agent-args", default="")
-    q.add_argument("--claude-args", default="--dangerously-skip-permissions")
+    q.add_argument("--claude-args", default="")
+    q.add_argument("--full-auto", action="store_true",
+                   help="as the fleet's --full-auto; a sub-fleet inherits its fleet's choice")
     q.add_argument("--mission", default="")
     q.add_argument("--roadmap-dir", default="new_roadmap/fleet")
 

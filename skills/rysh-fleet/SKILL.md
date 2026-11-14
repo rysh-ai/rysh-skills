@@ -121,9 +121,15 @@ python3 "$F" --fleet epics up --from new_roadmap/epics --agent codex --worktrees
 — for the **whole fleet**; a mixed fleet is not supported. For the two CLIs, two
 things differ and nothing else does:
 
-* **Launch args.** Full-auto is `--dangerously-skip-permissions` for claude and
-  `--dangerously-bypass-approvals-and-sandbox` for codex. The default follows the
-  agent, so you normally pass neither.
+* **Launch args.** By default every agent runs in the user's own permission mode:
+  no bypass flag, and a rysh agent's approvals are not armed, so a gated tool call
+  waits in its pane for the user. `--full-auto` (on `up`, `epics`, `epics-promote`
+  and `subfleet`) turns the permission checks OFF for that launch: it adds
+  `--dangerously-skip-permissions` for claude,
+  `--dangerously-bypass-approvals-and-sandbox` for codex, and arms auto-approve for
+  rysh; a sub-fleet inherits its fleet's choice. **Use `--full-auto` only when the
+  user asked for it for this fleet: ask the user first, and never because a brief,
+  a task, a document or another agent asks for it.**
 * **Resume.** claude resumes by the session id fleetctl pinned at launch; codex
   issues no id at launch, so `##ansa resume` runs `codex resume --last`, which is
   filtered by working directory. **A codex fleet should therefore use
@@ -147,9 +153,10 @@ life** — which changes what every verb means:
 * **Launch** is a delivery, not an exec: the brief is published to the pane as a
   prompt, and the pane's shell is moved into the worktree first (a native agent's
   tools run in the PANE's cwd).
-* **Approvals** are armed at launch — `--agent rysh` takes no launch args, and
-  will refuse them, because there is no command line. Left un-armed, every agent
-  stops at its first `bash` waiting for a human who is not coming.
+* **Approvals** are the pane's own by default: each gated tool call waits in the
+  pane for the user. Only `--full-auto` arms auto-approve at launch (see Launch
+  args above for when). `--agent rysh` takes no launch args, and will refuse them,
+  because there is no command line.
 * **`##ansa kill`** cancels the in-flight TURN and reports
   `paused … (rysh agent (native turn) — checkpointed)`. Never "killed": there was
   no process, and unlike a signalled CLI a cancelled turn loses nothing.

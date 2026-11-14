@@ -111,24 +111,24 @@ class CodexLaunchesAsCodex(LaunchStub):
 
 
 class DefaultArgsArePerAgent(unittest.TestCase):
-    """codex's full-auto flag is not claude's. Handing codex
-    `--dangerously-skip-permissions` is an immediate hard error at the pane;
-    handing it nothing is the approval prompt that hangs the agent."""
+    """The default is the user's own permission mode (no flag). codex's
+    full-auto flag is not claude's: handing codex
+    `--dangerously-skip-permissions` is an immediate hard error at the pane."""
 
     class Args:
         def __init__(self, **kw):
             self.agent = kw.get("agent", "claude")
             self.agent_args = kw.get("agent_args", "")
-            self.claude_args = kw.get("claude_args", "--dangerously-skip-permissions")
+            self.claude_args = kw.get("claude_args", "")
+            self.full_auto = kw.get("full_auto", False)
 
     def test_claude_default(self):
-        self.assertEqual(fleetctl.agent_args_for(self.Args()),
-                         ("claude", "--dangerously-skip-permissions"))
+        self.assertEqual(fleetctl.agent_args_for(self.Args()), ("claude", ""))
 
-    def test_codex_default_is_its_own_bypass_flag(self):
-        agent, args = fleetctl.agent_args_for(self.Args(agent="codex"))
+    def test_codex_full_auto_is_its_own_bypass_flag(self):
+        agent, args = fleetctl.agent_args_for(self.Args(agent="codex", full_auto=True))
         self.assertEqual((agent, args), ("codex", "--dangerously-bypass-approvals-and-sandbox"),
-                         "a codex fleet left on claude's default flag dies at every pane")
+                         "a codex fleet handed claude's flag dies at every pane")
 
     def test_an_explicit_override_wins_in_either_spelling(self):
         self.assertEqual(fleetctl.agent_args_for(self.Args(agent="codex", agent_args="--foo"))[1],
@@ -258,7 +258,7 @@ class ANativeAgentIsNotAProcess(LaunchStub):
     def test_the_brief_is_delivered_as_a_prompt_and_nothing_is_spawned(self):
         pane = {"id": "1234abcd-0000-1111-2222-333344445555"}
         res = fleetctl.start_agent({"session": "s", "nats_host": "h", "nats_port": 1},
-                                   pane, "BRIEF BODY", None, "", "rysh")
+                                   pane, "BRIEF BODY", None, "", "rysh", full_auto=True)
         self.assertNotIn("cmd", self.sent,
                          "a rysh agent must not launch a process — there is no CLI to run")
         self.assertEqual([e["t"] for _, e in self.published],
@@ -307,7 +307,7 @@ class ANativeAgentRefusesLaunchArgs(unittest.TestCase):
         def __init__(self, **kw):
             self.agent = kw.get("agent", "rysh")
             self.agent_args = kw.get("agent_args", "")
-            self.claude_args = kw.get("claude_args", "--dangerously-skip-permissions")
+            self.claude_args = kw.get("claude_args", "")
 
     def test_rysh_takes_no_args(self):
         agent, launch = fleetctl.agent_args_for(self.Args())

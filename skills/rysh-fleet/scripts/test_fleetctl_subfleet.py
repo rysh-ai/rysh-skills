@@ -91,7 +91,8 @@ class Harness:
         self.panes += fresh
         return fresh
 
-    def start_agent(self, env, pane, prompt, worktree, launch_args, agent, fleet, comm=None):
+    def start_agent(self, env, pane, prompt, worktree, launch_args, agent, fleet, comm=None,
+                    full_auto=False):
         self.started.append(pane["id"])
         self.comms.append(comm)
         return {"session_id": pane["id"], "cwd": "/ws"}
