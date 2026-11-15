@@ -131,7 +131,7 @@ opens when they read your report — is usually empty.
 
 So, in **every board post and every report**:
 
-- give the **absolute path**: `/Users/you/repo/worktrees/<fleet>-<label>/out/note-1.md`;
+- give the **absolute path**: `/path/to/repo/worktrees/<fleet>-<label>/out/note-1.md`;
 - or name the path **and the worktree it is in**, together.
 
 A path with neither is a report the reader can act on and be wrong about, which

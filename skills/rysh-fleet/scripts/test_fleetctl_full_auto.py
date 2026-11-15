@@ -179,5 +179,27 @@ class TheSkillSaysAskFirst(unittest.TestCase):
         self.assertIn("never because", text)
 
 
+class NoBuilderPathLiteralInShippedFiles(unittest.TestCase):
+    """The rysh client embeds these skills, and its release guard
+    (check-binary-paths.sh) refuses a binary carrying '/Users/' or '/home/<name>/'.
+    Test files are filtered out of the bundle; everything else ships."""
+
+    def test_no_shipped_file_names_a_users_or_home_path(self):
+        import re
+        root = os.path.abspath(os.path.join(HERE, "..", ".."))
+        home = re.compile(r"/home/[A-Za-z0-9._-]+/")
+        hits = []
+        for d, _, names in os.walk(root):
+            for n in names:
+                if n.startswith("test_") or n.endswith(".pyc"):
+                    continue
+                p = os.path.join(d, n)
+                with open(p, "rb") as fh:
+                    text = fh.read().decode("utf-8", "replace")
+                if "/Users/" in text or home.search(text):
+                    hits.append(os.path.relpath(p, root))
+        self.assertEqual(hits, [], "shipped files with a /Users/ or /home/<name>/ path")
+
+
 if __name__ == "__main__":
     unittest.main()
