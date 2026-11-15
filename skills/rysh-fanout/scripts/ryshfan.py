@@ -631,10 +631,30 @@ def send_keys(env: dict, pane_id: str, data: bytes) -> None:
 
 def fanout_dir(env: dict) -> str:
     """Where prompt files live. Prompts are the only thing still on disk: they
-    are content, not state, and the pane's shell has to be able to `cat` one."""
+    are content, not state, and the pane's shell has to be able to `cat` one.
+
+    The directory sits in the workspace, so it carries a `.gitignore` of `*`
+    (written once, never over an existing one): a prompt can hold a pasted
+    secret and must not be committed with the repository."""
     path = os.path.join(env["workspace"], ".rysh", "fanout")
     os.makedirs(path, exist_ok=True)
+    ignore = os.path.join(path, ".gitignore")
+    if not os.path.lexists(ignore):
+        try:
+            fd = os.open(ignore, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+            with os.fdopen(fd, "w") as fh:
+                fh.write("*\n")
+        except FileExistsError:
+            pass
     return path
+
+
+def write_private(path: str, text: str) -> None:
+    """Write a file only its owner can read (0600), never through a symlink."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    os.fchmod(fd, 0o600)  # an existing file would keep its old mode otherwise
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
 
 
 # --------------------------------------------------------------------------
@@ -981,8 +1001,7 @@ def op_start(env: dict, pane: dict, prompt: str, claude_args: str, panes: list[d
     args = claude_args if caller else f"--session-id {session_id} {claude_args}"
 
     path = os.path.join(fanout_dir(env), f"prompt-{pane['id'][:8]}-{int(time.time())}.txt")
-    with open(path, "w") as fh:
-        fh.write(prompt)
+    write_private(path, prompt)
 
     # Name the pane after its task before starting it. The name is also a
     # selector, so this is a handle as well as a label: `wait audit-secrets`

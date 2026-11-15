@@ -48,8 +48,9 @@ import uuid
 # Nothing here may assume where the skill was installed. The sibling lookup
 # off __file__ covers the normal case (both skills in one skills directory,
 # wherever that is); the rest cover a split install — fanout in ~/.claude or
-# $CODEX_HOME, fleet in the project — and RYSHFAN_DIR is the escape hatch for
-# a layout none of them predicted.
+# $CODEX_HOME — and RYSHFAN_DIR is the escape hatch for a layout none of them
+# predicted. There is NO root relative to the current directory: a repository
+# the shell stands in could otherwise supply its own ryshfan.py to import.
 # --------------------------------------------------------------------------
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -57,7 +58,6 @@ _HOME = os.path.expanduser("~")
 _SKILL_ROOTS = [
     os.environ.get("RYSH_SKILLS_DIR", ""),
     os.path.join(os.environ["CLAUDE_PLUGIN_ROOT"], "skills") if os.environ.get("CLAUDE_PLUGIN_ROOT") else "",
-    os.path.join(".claude", "skills"),
     os.path.join(_HOME, ".claude", "skills"),
     os.path.join(os.environ.get("CODEX_HOME") or os.path.join(_HOME, ".codex"), "skills"),
 ]
@@ -879,10 +879,23 @@ AGENTS = {
     "rysh": {"default_args": "", "full_auto_args": "", "pins_session_id": False, "native": True},
 }
 
+def write_private(path: str, text: str) -> None:
+    """Write a file only its owner can read (0600), never through a symlink.
+
+    fleetctl's own copy, not ryshfan's: a split install can pair this fleetctl
+    with an older ryshfan that has none."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    os.fchmod(fd, 0o600)  # an existing file would keep its old mode otherwise
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+
+
 FULL_AUTO_HELP = ("launch every agent with its permission checks OFF (claude "
                   "--dangerously-skip-permissions, codex --dangerously-bypass-approvals-and-sandbox, "
-                  "rysh auto-approve). Only when the user asked for it for this launch; the "
-                  "default is the user's own permission mode")
+                  "rysh auto-approve). Fleet claudes also accept messages from other sessions without "
+                  "a prompt (crossSessionInbound: accept), so with this flag such a message can drive "
+                  "an agent whose checks are off. Only when the user asked for it for this launch; "
+                  "the default is the user's own permission mode")
 
 META_AGENT = "fleet.agent"        # which agent this pane runs: claude|codex|rysh
 META_AGENT_ARGS = "agent.args"    # its launch args, so resume restores the mode
@@ -1150,8 +1163,8 @@ def claude_comm_settings(env: dict, pane: dict) -> str:
 
     Two keys, both load-bearing, both proven live in design 050 P2:
 
-    * `crossSessionInbound: accept`. Fleet claudes bypass permissions, and in
-      that mode Claude Code HOLDS an inbound message from a sender that does not
+    * `crossSessionInbound: accept`. With `--full-auto` fleet claudes bypass
+      permissions, and in that mode Claude Code HOLDS an inbound message from a sender that does not
       attest bypass -- behind an approval dialog in the composer, which is
       exactly the surface polling-stream exists to keep clear.
     * a SessionStart hook that stamps `claude.inbox` on the pane with the
@@ -1180,8 +1193,7 @@ def claude_comm_settings(env: dict, pane: dict) -> str:
         "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": hook}]}]},
     }
     path = os.path.join(R.fanout_dir(env), f"fleet-settings-{pane['id'][:8]}.json")
-    with open(path, "w") as fh:
-        json.dump(settings, fh, indent=1)
+    write_private(path, json.dumps(settings, indent=1))
     return path
 
 
@@ -1402,8 +1414,7 @@ def start_agent(env: dict, pane: dict, prompt: str, cwd: str | None,
         die(f"unknown --agent {agent!r}; known: {', '.join(sorted(AGENTS))}")
     path = os.path.join(R.fanout_dir(env),
                         f"fleet-{pane['id'][:8]}-{int(time.time())}.txt")
-    with open(path, "w") as fh:
-        fh.write(prompt)
+    write_private(path, prompt)
     cd = f"cd {cwd} && " if cwd else ""
 
     if is_native(agent):

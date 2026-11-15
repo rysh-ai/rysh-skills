@@ -201,5 +201,46 @@ class NoBuilderPathLiteralInShippedFiles(unittest.TestCase):
         self.assertEqual(hits, [], "shipped files with a /Users/ or /home/<name>/ path")
 
 
+class TheFanoutImportSearchHasNoCwdRoot(unittest.TestCase):
+    """An untrusted repository's own .claude/skills/rysh-fanout must never be imported
+    because the shell happens to stand in it."""
+
+    def test_no_relative_skill_root(self):
+        self.assertNotIn(os.path.join(".claude", "skills"), fleetctl._SKILL_ROOTS)
+        env_roots = {os.environ.get("RYSH_SKILLS_DIR", "")}
+        for r in fleetctl._SKILL_ROOTS:
+            if r and r not in env_roots:
+                self.assertTrue(os.path.isabs(r), f"relative skill root {r!r}")
+
+
+class TheHelpNamesCrossSessionInbound(unittest.TestCase):
+    def test_full_auto_help_and_skill_say_it(self):
+        self.assertIn("crossSessionInbound", fleetctl.FULL_AUTO_HELP)
+        self.assertIn("crossSessionInbound", read("..", "SKILL.md"))
+
+
+class FleetFilesArePrivate(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.ws = tempfile.mkdtemp()
+        self.env = {"workspace": self.ws, "session": "s"}
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.ws, ignore_errors=True)
+
+    def test_the_fleet_prompt_file_is_0600(self):
+        self.assertIn("    write_private(path, prompt)", read("fleetctl.py"))
+        p = os.path.join(self.ws, "p.txt")
+        fleetctl.write_private(p, "brief")
+        self.assertEqual(os.stat(p).st_mode & 0o777, 0o600)
+
+    def test_settings_file_is_0600_and_the_dir_ignores_itself(self):
+        path = fleetctl.claude_comm_settings(self.env, {"id": "1234abcd-x"})
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        with open(os.path.join(os.path.dirname(path), ".gitignore")) as fh:
+            self.assertEqual(fh.read(), "*\n")
+
+
 if __name__ == "__main__":
     unittest.main()
