@@ -994,7 +994,8 @@ def start_claude_args(claude_args: str, full_auto: bool) -> str:
     return args
 
 
-def op_start(env: dict, pane: dict, prompt: str, claude_args: str, panes: list[dict] | None = None) -> dict:
+def op_start(env: dict, pane: dict, prompt: str, claude_args: str, panes: list[dict] | None = None,
+             cwd: str | None = None) -> dict:
     """Launch claude in the pane with the prompt already supplied as argv.
 
     argv, not typing: a prompt typed into a claude that is still drawing its
@@ -1009,7 +1010,13 @@ def op_start(env: dict, pane: dict, prompt: str, claude_args: str, panes: list[d
     The session id is pinned here rather than read back afterwards: claude only
     reports the id it chose when it exits, which is exactly too late to follow a
     child that is still running.
+
+    The child runs in cwd (default: this process's own directory). `##new
+    stack` opens panes in the workspace root, so without the cd a supervisor
+    working in another folder gets children that load the root's CLAUDE.md
+    and memory instead of its own.
     """
+    where = shlex.quote(cwd or os.getcwd())
     caller = SESSION_ID_ARG.search(claude_args)
     session_id = caller.group(1) if caller else str(uuid.uuid4())
     args = claude_args if caller else f"--session-id {session_id} {claude_args}"
@@ -1026,7 +1033,7 @@ def op_start(env: dict, pane: dict, prompt: str, claude_args: str, panes: list[d
 
     record_session(env, pane, session_id, task)
     mark_prompted(env, pane)
-    out = cmd_to_pane(env, pane, f'{clean_env(env, "claude")} claude {args} "$(cat {path})"')
+    out = cmd_to_pane(env, pane, f'cd {where} && {clean_env(env, "claude")} claude {args} "$(cat {path})"')
     return {"session_id": session_id, "name": name, "task": task, "output": out.strip()}
 
 
@@ -1210,6 +1217,8 @@ def main() -> None:
     g.add_argument("--prompt-file")
     p.add_argument("--claude-args", default="",
                    help="extra claude launch args (default: none, the user's own permission mode)")
+    p.add_argument("--cwd", default=None,
+                   help="directory the child runs in (default: this supervisor's own directory)")
     p.add_argument("--full-auto", action="store_true",
                    help="start the child with --dangerously-skip-permissions (its permission checks "
                         "OFF). Only when the user asked for it for this child")
@@ -1311,7 +1320,7 @@ def main() -> None:
             with open(args.prompt_file) as fh:
                 prompt = fh.read()
         claude_args = start_claude_args(args.claude_args, args.full_auto)
-        print(json.dumps({"pane": pane, **op_start(env, pane, prompt, claude_args, panes)}, indent=2))
+        print(json.dumps({"pane": pane, **op_start(env, pane, prompt, claude_args, panes, args.cwd)}, indent=2))
     elif args.cmd == "send":
         print(json.dumps(op_send(env, pane, args.text), indent=2))
     elif args.cmd == "screen":

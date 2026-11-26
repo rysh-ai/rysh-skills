@@ -83,6 +83,10 @@ otherwise they run one at a time and you have gained nothing.
 (`audit-secrets`, `audit-tests`) instead of a zoo (`humorous-falcon`). The name is also
 a selector: `wait audit-secrets` works.
 
+`start` runs the child in your own directory (`cd` first, `--cwd DIR` to choose another):
+`##new stack` opens panes in the workspace root, and a child started there would load
+that folder's CLAUDE.md and memory instead of yours.
+
 ### Getting results back
 
 `wait` returns what the child said. `start` pins a `--session-id` for every child, so
