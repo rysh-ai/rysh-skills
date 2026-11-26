@@ -711,18 +711,32 @@ def child_session(pane: dict) -> str | None:
 
 
 def children(panes: list[dict], mine_only: bool = True) -> list[dict]:
-    """Panes running a claude we started.
+    """Panes running a claude a fanout supervisor started.
 
-    mine_only compares claude.parent against our own pane, so two supervisors
-    fanning out in the same session do not collect each other's children.
+    A child is a pane whose claude.parent names its supervisor (record_session
+    sets it). A pane with claude.session_id and no claude.parent was started by
+    something else (a spawn script, a launcher), so it is nobody's child: on
+    2026-11-26 counting those as "mine" made `close --all` delete every org
+    pane in the session. Our own pane is never a child, whatever its meta.
+
+    mine_only keeps the panes whose claude.parent is exactly our own pane, so
+    two supervisors fanning out in the same session do not collect each
+    other's children; with no RYSH_PANE we cannot tell, so nothing is ours.
     """
     me = os.environ.get("RYSH_PANE", "").strip()
+    if mine_only and not me:
+        return []
     out = []
     for p in panes:
         meta = pane_meta(p)
         if META_SESSION not in meta:
             continue
-        if mine_only and me and meta.get(META_PARENT) not in (None, me):
+        if p.get("self") or (me and p["id"] == me):
+            continue
+        parent = (meta.get(META_PARENT) or "").strip()
+        if not parent:
+            continue
+        if mine_only and parent != me:
             continue
         out.append(p)
     return out
@@ -1119,12 +1133,20 @@ def op_children(env: dict, mine_only: bool) -> list[dict]:
     return out
 
 
-def op_close_all(env: dict, mine_only: bool) -> dict:
-    """Close every child we started. Each open child is a live claude process."""
+def op_close_all(env: dict, mine_only: bool, yes: bool = False) -> dict:
+    """Close every child we started. Each open child is a live claude process.
+
+    Without yes nothing is deleted: the result lists what would be closed, so
+    the caller (or the user) can check it before running again with --yes.
+    """
+    targets = [{"name": p["name"], "id": p["id"]} for p in children(list_panes(env), mine_only)]
+    if not yes:
+        return {"would_close": targets, "count": len(targets), "closed": [],
+                "note": "nothing closed; check the list, then run close --all --yes"}
     closed = []
-    for pane in children(list_panes(env), mine_only):
-        rysh_exec(env, f"##pane delete {pane['id']}")
-        closed.append({"name": pane["name"], "id": pane["id"]})
+    for t in targets:
+        rysh_exec(env, f"##pane delete {t['id']}")
+        closed.append(t)
     return {"closed": closed, "count": len(closed)}
 
 
@@ -1224,6 +1246,8 @@ def main() -> None:
                    help="close every child this supervisor started")
     p.add_argument("--any-parent", action="store_true",
                    help="with --all, include children started by another supervisor")
+    p.add_argument("--yes", action="store_true",
+                   help="with --all, really close them (without it the list is printed and nothing closed)")
 
     p = sub.add_parser("children")
     p.add_argument("--any-parent", action="store_true",
@@ -1254,7 +1278,10 @@ def main() -> None:
         print(json.dumps(op_children(env, not args.any_parent), indent=2))
         return
     if args.cmd == "close" and args.all:
-        print(json.dumps(op_close_all(env, not args.any_parent), indent=2))
+        res = op_close_all(env, not args.any_parent, args.yes)
+        print(json.dumps(res, indent=2))
+        if not args.yes:
+            sys.exit(3)
         return
     if args.cmd == "close" and not args.pane:
         die("close needs a pane, or --all")

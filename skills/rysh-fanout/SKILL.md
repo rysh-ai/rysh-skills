@@ -182,7 +182,7 @@ are running in may itself live inside that daemon. Tell the user; let them choos
 | `status <pane>` | `busy` / `idle` / `no-tui`, the composer, session id, last answer time |
 | `wait <pane> [--timeout S]` | block until the child stops working; returns its answer |
 | `result <pane> [--max-chars N]` | the child's last answer + transcript path, any time after |
-| `close <pane>` \| `close --all` | delete one pane, or every child this supervisor started |
+| `close <pane>` \| `close --all [--yes]` | delete one pane, or every child this supervisor started: `--all` alone only prints the list (exit 3); show it to the user, then add `--yes` |
 | `children` | every pane running a claude we started: task, session id, whether it is still running |
 | `watch <pane>` | block until the pane's program EXITS (a daemon event, not a screen poll) |
 | `cost` | session spend, and any token ceiling close to being hit |
@@ -203,7 +203,10 @@ restart. `##pane list` also reports each pane's live foreground program
 (`running=claude`), straight from the daemon rather than scraped off a screen.
 
 That is what `children` and `close --all` are built on, and why they can tell OUR
-children from another supervisor's (`claude.parent`).
+children from another supervisor's (`claude.parent`). A pane is a child only when its
+`claude.parent` is set (`start` sets it): a pane with `claude.session_id` and no
+`claude.parent` was started by something else and is never listed or closed, and
+neither is your own pane.
 
 `watch <pane>` blocks on the daemon's own process event, which is the one thing `wait`
 cannot see: a child that crashed, was killed, or was taken over and quit looks exactly
