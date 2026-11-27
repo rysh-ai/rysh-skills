@@ -40,7 +40,8 @@ class CliBus(unittest.TestCase):
             raise AssertionError("ryshfan opened its own bus connection")
 
         for p in (mock.patch.object(ryshfan.subprocess, "run", run),
-                  mock.patch.object(ryshfan, "Nats", no_bus)):
+                  mock.patch("socket.create_connection", no_bus),
+                  mock.patch("socket.socket.connect", no_bus)):
             p.start()
             self.addCleanup(p.stop)
 

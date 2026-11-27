@@ -30,95 +30,11 @@ import json
 import os
 import re
 import shlex
-import socket
 import subprocess
 import sys
 import time
 import uuid
 from datetime import datetime
-
-# --------------------------------------------------------------------------
-# NATS — minimal text-protocol client (stdlib only, no dependency to install)
-# --------------------------------------------------------------------------
-
-
-class Nats:
-    def __init__(self, host: str, port: int, timeout: float = 5.0):
-        self.sock = socket.create_connection((host, port), timeout=timeout)
-        self.sock.settimeout(timeout)
-        self.buf = b""
-        self._readline()  # INFO
-        self.sock.sendall(
-            b'CONNECT {"verbose":false,"pedantic":false,"tls_required":false,'
-            b'"name":"ryshfan","lang":"python","version":"1"}\r\n'
-        )
-
-    def close(self) -> None:
-        try:
-            self.sock.close()
-        except OSError:
-            pass
-
-    def _fill(self) -> None:
-        chunk = self.sock.recv(65536)
-        if not chunk:
-            raise ConnectionError("NATS connection closed")
-        self.buf += chunk
-
-    def _readline(self) -> bytes:
-        while b"\r\n" not in self.buf:
-            self._fill()
-        line, self.buf = self.buf.split(b"\r\n", 1)
-        return line
-
-    def _read_exact(self, n: int) -> bytes:
-        while len(self.buf) < n:
-            self._fill()
-        data, self.buf = self.buf[:n], self.buf[n:]
-        return data
-
-    def publish(self, subject: str, payload: bytes) -> None:
-        self.sock.sendall(
-            b"PUB %s %d\r\n%s\r\n" % (subject.encode(), len(payload), payload)
-        )
-        # Round-trip a PING so the publish is on the wire before we return.
-        self.sock.sendall(b"PING\r\n")
-        while True:
-            line = self._readline()
-            if line.startswith(b"PONG"):
-                return
-            if line.startswith(b"PING"):
-                self.sock.sendall(b"PONG\r\n")
-            elif line.startswith(b"-ERR"):
-                raise RuntimeError(line.decode(errors="replace"))
-
-    def request(self, subject: str, payload: bytes, timeout: float = 5.0) -> bytes:
-        inbox = "_INBOX." + uuid.uuid4().hex
-        self.sock.sendall(b"SUB %s 1\r\n" % inbox.encode())
-        self.sock.sendall(
-            b"PUB %s %s %d\r\n%s\r\n"
-            % (subject.encode(), inbox.encode(), len(payload), payload)
-        )
-        deadline = time.time() + timeout
-        while True:
-            self.sock.settimeout(max(0.1, deadline - time.time()))
-            line = self._readline()
-            if line.startswith(b"MSG "):
-                nbytes = int(line.split()[-1])
-                data = self._read_exact(nbytes)
-                self._read_exact(2)  # trailing CRLF
-                return data
-            if line.startswith(b"PING"):
-                self.sock.sendall(b"PONG\r\n")
-            elif line.startswith(b"-ERR"):
-                raise RuntimeError(line.decode(errors="replace"))
-            if time.time() > deadline:
-                raise TimeoutError("no reply on " + subject)
-
-
-def envelope(tag: str, payload: dict) -> bytes:
-    return json.dumps({"t": tag, "p": payload}).encode()
-
 
 # --------------------------------------------------------------------------
 # Session discovery
@@ -541,20 +457,29 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|
 BORDER = re.compile(r"^\s*─{10,}\s*$")
 
 
+def rysh_cli(env: dict, args: list[str], timeout: int = 30) -> str:
+    """Run `<bin> <args>` against the session; stdout, or RuntimeError.
+
+    Screen reads and key sends go through the rysh CLI, which carries the
+    session's bus credential. A bare connection of our own is refused by the
+    daemon (Authorization Violation), and a refused publish is lost silently.
+    """
+    argv = [env["bin"], *args]
+    proc = subprocess.run(argv, cwd=env["workspace"], capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{args[0]} failed (rc {proc.returncode}): {(proc.stderr or proc.stdout or '').strip()[:300]}")
+    return proc.stdout or ""
+
+
 def vt_screen(env: dict, pane_id: str) -> dict:
-    nc = Nats(env["nats_host"], env["nats_port"])
-    try:
-        raw = nc.request(
-            f"{env['session']}.pane.{pane_id}.snapshot",
-            envelope("MsgGetPaneVT", {}),
-        )
-    finally:
-        nc.close()
-    env_reply = json.loads(raw)
-    vt = env_reply.get("p") or {}
-    raw_lines = list(vt.get("screen") or [])
+    out = rysh_cli(env, ["screen", "--session", env["session"], "--pane-id", pane_id, "--json"])
+    reply = json.loads(out)
+    interactive = bool(reply.get("interactive"))
+    # At the shell prompt `rysh screen` shows the pane's output; the composer
+    # and busy checks below want only a running program's screen.
+    raw_lines = list(reply.get("rows") or []) if interactive else []
     return {
-        "interactive": bool(vt.get("interactive")),
+        "interactive": interactive,
         "lines": [ANSI.sub("", ln) for ln in raw_lines],
         "raw": raw_lines,
     }
@@ -611,17 +536,8 @@ def has_composer(lines: list[str]) -> bool:
 
 
 def send_keys(env: dict, pane_id: str, data: bytes) -> None:
-    nc = Nats(env["nats_host"], env["nats_port"])
-    try:
-        nc.publish(
-            f"{env['session']}.pane.{pane_id}.rawinput",
-            envelope(
-                "MsgRawKeyInput",
-                {"pane_id": pane_id, "data": base64.b64encode(data).decode()},
-            ),
-        )
-    finally:
-        nc.close()
+    rysh_cli(env, ["keys", "--session", env["session"], "--pane-id", pane_id,
+                   "--b64", base64.b64encode(data).decode()])
 
 
 # --------------------------------------------------------------------------
@@ -1158,38 +1074,24 @@ def op_close_all(env: dict, mine_only: bool, yes: bool = False) -> dict:
 
 
 def op_watch(env: dict, pane: dict, timeout: float) -> dict:
-    """Block until the pane's foreground program exits, using the daemon's own
-    event rather than a poll.
+    """Block until the pane's foreground program exits.
 
     This is what `wait` cannot tell you: a child that CRASHED, was killed, or
     was taken over and exited looks exactly like a child thinking hard when all
-    you have is a rendered screen.
+    you have is a rendered screen. `rysh wait --until exited` asks the daemon
+    through the session's own connection (a bare bus connection of ours is
+    refused): exit 0 exited, 5 timeout.
     """
-    nc = Nats(env["nats_host"], env["nats_port"], timeout=max(5.0, timeout))
-    try:
-        sub = f"{env['session']}.pane.{pane['id']}.process"
-        nc.sock.sendall(b"SUB %s 90\r\n" % sub.encode())
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            nc.sock.settimeout(max(0.1, deadline - time.time()))
-            try:
-                line = nc._readline()
-            except (TimeoutError, OSError):
-                break
-            if line.startswith(b"PING"):
-                nc.sock.sendall(b"PONG\r\n")
-                continue
-            if not line.startswith(b"MSG "):
-                continue
-            data = nc._read_exact(int(line.split()[-1]))
-            nc._read_exact(2)
-            payload = (json.loads(data).get("p") or {})
-            if payload.get("event") == "exit":
-                return {"state": "exited", "program": payload.get("program"),
-                        "at": payload.get("at")}
+    secs = max(1, int(timeout))
+    argv = [env["bin"], "wait", "--session", env["session"], "--pane-id", pane["id"],
+            "--until", "exited", "--timeout", f"{secs}s", "--json"]
+    proc = subprocess.run(argv, cwd=env["workspace"], capture_output=True, text=True, timeout=secs + 30)
+    if proc.returncode == 5:
         return {"state": "timeout"}
-    finally:
-        nc.close()
+    if proc.returncode != 0:
+        raise RuntimeError(f"wait failed (rc {proc.returncode}): {(proc.stderr or proc.stdout or '').strip()[:300]}")
+    reply = json.loads(proc.stdout or "{}")
+    return {"state": "exited", "program": reply.get("program")}
 
 
 def die(msg: str) -> None:

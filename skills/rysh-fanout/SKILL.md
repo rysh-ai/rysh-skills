@@ -87,6 +87,10 @@ a selector: `wait audit-secrets` works.
 `##new stack` opens panes in the workspace root, and a child started there would load
 that folder's CLAUDE.md and memory instead of yours.
 
+Screens, key presses and `watch` go through the rysh CLI (`rysh screen --json`,
+`rysh keys`, `rysh wait`), which carries the session's bus credential; the daemon
+refuses a bare bus connection. They need a rysh binary that has `rysh keys`.
+
 ### Getting results back
 
 `wait` returns what the child said. `start` pins a `--session-id` for every child, so
@@ -163,7 +167,7 @@ A rysh daemon older than **2026-07-29** (commit `18eae6e`) terminates typed comm
 with LF instead of CR. claude treats LF as "insert a newline", so prompts pile up in
 its composer and never submit. `rysh list-sessions` flags such a daemon `[outdated]`.
 
-`send` handles it: it checks the composer afterwards and presses Enter over NATS if
+`send` handles it: it checks the composer afterwards and presses Enter (`rysh keys`) if
 the text is still sitting there (`"submitted_by": "ryshfan-cr"` in the output).
 `start` is immune, since the prompt never goes through the composer.
 
@@ -188,7 +192,7 @@ are running in may itself live inside that daemon. Tell the user; let them choos
 | `result <pane> [--max-chars N]` | the child's last answer + transcript path, any time after |
 | `close <pane>` \| `close --all [--yes]` | delete one pane, or every child this supervisor started: `--all` alone only prints the list (exit 3); show it to the user, then add `--yes` |
 | `children` | every pane running a claude we started: task, session id, whether it is still running |
-| `watch <pane>` | block until the pane's program EXITS (a daemon event, not a screen poll) |
+| `watch <pane>` | block until the pane's program EXITS (`rysh wait --until exited`, not a screen poll) |
 | `cost` | session spend, and any token ceiling close to being hit |
 
 `start` takes `--claude-args` (default: none) if a child needs a different model or
@@ -212,7 +216,7 @@ children from another supervisor's (`claude.parent`). A pane is a child only whe
 `claude.parent` was started by something else and is never listed or closed, and
 neither is your own pane.
 
-`watch <pane>` blocks on the daemon's own process event, which is the one thing `wait`
+`watch <pane>` blocks until the pane's program exits (`rysh wait --until exited`), which is the one thing `wait`
 cannot see: a child that crashed, was killed, or was taken over and quit looks exactly
 like a child thinking hard when all you have is its screen.
 
