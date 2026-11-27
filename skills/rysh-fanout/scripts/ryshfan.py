@@ -474,7 +474,9 @@ def rysh_cli(env: dict, args: list[str], timeout: int = 30) -> str:
 def vt_screen(env: dict, pane_id: str) -> dict:
     out = rysh_cli(env, ["screen", "--session", env["session"], "--pane-id", pane_id, "--json"])
     reply = json.loads(out)
-    interactive = bool(reply.get("interactive"))
+    if "interactive" not in reply:
+        raise RuntimeError(f"{env['bin']} is older than `rysh keys`: its screen --json does not say interactive; use a current rysh")
+    interactive = bool(reply["interactive"])
     # At the shell prompt `rysh screen` shows the pane's output; the composer
     # and busy checks below want only a running program's screen.
     raw_lines = list(reply.get("rows") or []) if interactive else []
