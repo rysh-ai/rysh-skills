@@ -77,6 +77,24 @@ class CliBus(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             ryshfan.send_keys(ENV, PANE, b"\r")
 
+    def test_watch_uses_rysh_wait_exited(self):
+        self.reply["stdout"] = json.dumps({"status": "reached", "exit_code": 0, "pane_id": PANE,
+                                           "state": "exited", "program": "claude"})
+        got = ryshfan.op_watch(ENV, {"id": PANE}, 90)
+        self.assertEqual(self.calls, [[ENV["bin"], "wait", "--session", "s1", "--pane-id", PANE,
+                                       "--until", "exited", "--timeout", "90s", "--json"]])
+        self.assertEqual(got["state"], "exited")
+        self.assertEqual(got["program"], "claude")
+
+    def test_watch_timeout(self):
+        self.reply.update(returncode=5, stdout=json.dumps({"status": "timeout", "exit_code": 5, "state": "timeout"}))
+        self.assertEqual(ryshfan.op_watch(ENV, {"id": PANE}, 2)["state"], "timeout")
+
+    def test_watch_error_raises(self):
+        self.reply.update(returncode=1, stdout="")
+        with self.assertRaises(RuntimeError):
+            ryshfan.op_watch(ENV, {"id": PANE}, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
