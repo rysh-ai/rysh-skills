@@ -62,6 +62,13 @@ class CliBus(unittest.TestCase):
         self.assertFalse(s["interactive"])
         self.assertEqual(s["lines"], [])
 
+    def test_screen_from_an_old_rysh_raises(self):
+        # A rysh older than `rysh keys` prints no "interactive": every pane
+        # would read as having no screen. Say so instead.
+        self.reply["stdout"] = json.dumps({"pane_id": PANE, "rows": ["x"]})
+        with self.assertRaises(RuntimeError):
+            ryshfan.vt_screen(ENV, PANE)
+
     def test_screen_failure_raises(self):
         self.reply["returncode"] = 1
         with self.assertRaises(RuntimeError):
